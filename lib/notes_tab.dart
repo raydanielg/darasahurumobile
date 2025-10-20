@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
 import 'post_detail_screen.dart';
+import 'news_posts_list_screen.dart';
 import 'package:html_unescape/html_unescape.dart';
 
 class NewsTab extends StatefulWidget {
@@ -25,9 +26,6 @@ class _NewsTabState extends State<NewsTab> {
     {'title': 'A level', 'slug': 'a-level'},
     {'title': 'O level', 'slug': 'o-level'},
     {'title': 'Primary', 'slug': 'primary'},
-    {'title': 'Necta Info', 'slug': 'necta-info'},
-    {'title': 'Un & Colleges', 'slug': 'universities-colleges'},
-    {'title': 'Tamisemi', 'slug': 'tamisemi'},
   ];
 
   String _stripHtml(String s) => s.replaceAll(RegExp(r'<[^>]*>'), '');
@@ -120,7 +118,7 @@ class _NewsTabState extends State<NewsTab> {
 
           // Then, fetch subcategories for 'news-and-info'
           final subcategoriesResponse = await http.get(
-            Uri.parse('https://darasahuru.ac.tz/wp-json/wp/v2/categories?parent=$categoryId'),
+            Uri.parse('https://darasahuru.ac.tz/wp-json/wp/v2/categories?parent=$categoryId&per_page=100'),
           );
           print('Subcategories API Status: ${subcategoriesResponse.statusCode}');
           int postsCategoryId = categoryId;
@@ -131,28 +129,14 @@ class _NewsTabState extends State<NewsTab> {
             }
             setState(() {
               _subcategories = subs;
-              _selectedSubcategory = postsCategoryId.toString();
+              _selectedSubcategory = null; // show menu first; load posts after user taps
             });
           }
-
-          // Then, fetch posts for the first available subcategory (or parent if none)
-          final postsResponse = await http.get(
-            Uri.parse('https://darasahuru.ac.tz/wp-json/wp/v2/posts?categories=$postsCategoryId&per_page=10&_embed=1'),
-          );
-          print('Posts API Status: ${postsResponse.statusCode}');
-          if (postsResponse.statusCode == 200) {
-            setState(() {
-              _posts = json.decode(postsResponse.body);
-              _isLoading = false;
-            });
-            // Fetch recommended posts (do not block)
-            _fetchRecommendedPosts(postsCategoryId);
-          } else {
-            setState(() {
-              _error = 'Please turn on the internet and try again.';
-              _isLoading = false;
-            });
-          }
+          // Do not auto-load posts; wait for user to tap a category
+          setState(() {
+            _posts = [];
+            _isLoading = false;
+          });
         } else {
           setState(() {
             _error = 'News category not found.';
@@ -190,7 +174,7 @@ class _NewsTabState extends State<NewsTab> {
           final catId = cats[0]['id'];
           // Fetch subcategories for that category
           final response = await http.get(
-            Uri.parse('https://darasahuru.ac.tz/wp-json/wp/v2/categories?parent=$catId'),
+            Uri.parse('https://darasahuru.ac.tz/wp-json/wp/v2/categories?parent=$catId&per_page=100'),
           );
           if (response.statusCode == 200) {
             setState(() {
@@ -198,7 +182,7 @@ class _NewsTabState extends State<NewsTab> {
               _subcatStack.add(List<dynamic>.from(_subcategories));
               _subcategories = json.decode(response.body);
               _posts = [];
-              _selectedSubcategory = catId.toString();
+              _selectedSubcategory = null; // stay on menu level until user selects a subcategory
               _isLoading = false;
             });
           } else {
@@ -219,10 +203,9 @@ class _NewsTabState extends State<NewsTab> {
           _isLoading = false;
         });
       }
-    } catch (_) {
+    } catch (e) {
       setState(() {
-        _error = 'Failed to load subcategories for $categoryTitle.';
-        _error = 'Error loading subcategories for $categoryTitle: $e';
+        _error = 'Please turn on the internet and try again.';
         _isLoading = false;
       });
     }
@@ -236,7 +219,7 @@ class _NewsTabState extends State<NewsTab> {
 
     try {
       final response = await http.get(
-        Uri.parse('https://darasahuru.ac.tz/wp-json/wp/v2/posts?categories=$subcategoryId&per_page=10&_embed=1'),
+        Uri.parse('https://darasahuru.ac.tz/wp-json/wp/v2/posts?categories=$subcategoryId&per_page=30&_embed=1'),
       );
       if (response.statusCode == 200) {
         setState(() {
@@ -263,6 +246,8 @@ class _NewsTabState extends State<NewsTab> {
     setState(() {
       _isLoading = true;
       _error = null;
+      // Mark selected to show back header in UI
+      _selectedSubcategory = 'cat:$categoryTitle';
     });
 
     try {
@@ -273,7 +258,7 @@ class _NewsTabState extends State<NewsTab> {
       if (slug == 'all') {
         // For 'All', fetch posts for the main category
         final response = await http.get(
-          Uri.parse('https://darasahuru.ac.tz/wp-json/wp/v2/posts?categories=535&per_page=10&_embed=1'),
+          Uri.parse('https://darasahuru.ac.tz/wp-json/wp/v2/posts?categories=535&per_page=30&_embed=1'),
         );
         if (response.statusCode == 200) {
           setState(() {
@@ -297,7 +282,7 @@ class _NewsTabState extends State<NewsTab> {
             final catId = cats[0]['id'];
             // Fetch posts for that category
             final response = await http.get(
-              Uri.parse('https://darasahuru.ac.tz/wp-json/wp/v2/posts?categories=$catId&per_page=10&_embed=1'),
+              Uri.parse('https://darasahuru.ac.tz/wp-json/wp/v2/posts?categories=$catId&per_page=30&_embed=1'),
             );
             if (response.statusCode == 200) {
               setState(() {
@@ -332,7 +317,32 @@ class _NewsTabState extends State<NewsTab> {
   }
 
   Widget _buildSubcategoryMenu() {
-    final categoriesToShow = _subcategories.isNotEmpty ? _subcategories : _categories.map((cat) => {'id': 0, 'name': cat['title'], 'slug': cat['slug']}).toList();
+    const banned = {'tamisemi', 'universities-colleges', 'necta-info', 'necta-tanzania', 'online-services'};
+    final categoriesToShow = _subcategories.isNotEmpty
+        ? _subcategories
+            .where((c) {
+              final slug = (c['slug'] ?? '').toString().toLowerCase();
+              final name = (c['name'] ?? '').toString().toLowerCase();
+              if (banned.contains(slug)) return false;
+              if (slug.contains('univers') || name.contains('univers')) return false;
+              return true;
+            })
+            .map((c) => {
+                  'title': c['name'] ?? 'Unknown',
+                  'id': c['id'] ?? 0,
+                  'slug': c['slug'] ?? ''
+                })
+            .toList()
+        : _categories
+            .where((c) {
+              final slug = (c['slug'] ?? '').toLowerCase();
+              final name = (c['title'] ?? '').toLowerCase();
+              if (banned.contains(slug)) return false;
+              if (slug.contains('univers') || name.contains('univers')) return false;
+              return true;
+            })
+            .toList();
+
     return Container(
       color: Theme.of(context).scaffoldBackgroundColor,
       padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 8.0),
@@ -342,37 +352,69 @@ class _NewsTabState extends State<NewsTab> {
           Text(
             'Explore news from different categories',
             style: Theme.of(context).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.bold),
-            textAlign: TextAlign.center,
           ),
           const SizedBox(height: 8),
-          SingleChildScrollView(
-            scrollDirection: Axis.horizontal,
-            child: Row(
-              children: categoriesToShow.map((cat) {
-                final title = cat['name'] ?? 'Unknown';
+          Expanded(
+            child: ListView.builder(
+              padding: const EdgeInsets.only(bottom: 16.0),
+              itemCount: categoriesToShow.length,
+              itemBuilder: (context, index) {
+                final cat = categoriesToShow[index];
+                final titleRaw = cat['title'] ?? 'Unknown';
+                final title = HtmlUnescape().convert(titleRaw);
                 final id = cat['id'] ?? 0;
                 final slug = cat['slug'] ?? '';
-                final isSelected = _selectedSubcategory == id.toString();
-                return Padding(
-                  padding: const EdgeInsets.only(right: 8.0),
-                  child: ChoiceChip(
-                    label: Text(title),
-                    selected: isSelected,
-                    onSelected: (selected) {
-                      setState(() {
-                        _selectedSubcategory = selected ? id.toString() : null;
-                      });
-                      if (id != 0) {
-                        _fetchPostsForSubcategory(id);
+                return Card(
+                  elevation: 2,
+                  margin: const EdgeInsets.symmetric(vertical: 8.0),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12.0)),
+                  child: InkWell(
+                    borderRadius: BorderRadius.circular(12.0),
+                    onTap: () {
+                      if (_subcategories.isNotEmpty) {
+                        Navigator.push(
+                          context,
+                          MaterialPageRoute(
+                            builder: (_) => NewsPostsListScreen(title: title, categoryId: id),
+                          ),
+                        );
                       } else {
-                        _fetchSubcategoriesForCategory(title, slug);
+                        Navigator.push(
+                          context,
+                          MaterialPageRoute(
+                            builder: (_) => NewsPostsListScreen(title: title, slug: slug),
+                          ),
+                        );
                       }
                     },
-                    selectedColor: Theme.of(context).colorScheme.primary.withOpacity(0.2),
-                    backgroundColor: Colors.grey.shade100,
+                    child: Padding(
+                      padding: const EdgeInsets.all(16.0),
+                      child: Row(
+                        children: [
+                          Container(
+                            width: 48,
+                            height: 48,
+                            decoration: BoxDecoration(
+                              color: Colors.blueGrey.shade50,
+                              borderRadius: BorderRadius.circular(12),
+                            ),
+                            child: const Icon(Icons.folder, color: Colors.blueGrey, size: 28),
+                          ),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: Text(
+                              title,
+                              maxLines: 2,
+                              overflow: TextOverflow.ellipsis,
+                              style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
                   ),
                 );
-              }).toList(),
+              },
             ),
           ),
         ],
@@ -402,115 +444,29 @@ class _NewsTabState extends State<NewsTab> {
         return true;
       },
       child: Scaffold(
-        body: Column(
-          children: [
-            _buildSubcategoryMenu(),
-            Expanded(
-              child: _isLoading
-                  ? const Center(
-                      child: Column(
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        children: [
-                          CircularProgressIndicator(),
-                          SizedBox(height: 16),
-                          Text('Loading posts...'),
-                        ],
-                      ),
-                    )
-                  : _error != null
-                      ? Center(
-                          child: Column(
-                            mainAxisAlignment: MainAxisAlignment.center,
-                            children: [
-                              Text(_error!),
-                              const SizedBox(height: 16),
-                              ElevatedButton(
-                                onPressed: _fetchNotesPosts,
-                                child: const Text('Retry'),
-                              ),
-                            ],
-                          ),
-                        )
-                      : _posts.isEmpty
-                          ? const SizedBox.shrink()
-                          : ListView.builder(
-                              padding: const EdgeInsets.all(16.0),
-                              itemCount: _posts.length,
-                              itemBuilder: (context, index) {
-                                final post = _posts[index];
-                                final title = HtmlUnescape().convert(_stripHtml(post['title']?['rendered'] ?? 'Post'));
-                                final content = post['content']?['rendered'] ?? '';
-                                final imgUrl = _featuredImage(post);
-                                final time = _timeAgo(post['date'], post['date_gmt']);
-                                return Card(
-                                  elevation: 0,
-                                  margin: const EdgeInsets.symmetric(vertical: 8),
-                                  shape: RoundedRectangleBorder(
-                                    borderRadius: BorderRadius.circular(8),
-                                  ),
-                                  child: ListTile(
-                                    leading: ClipRRect(
-                                      borderRadius: BorderRadius.circular(8),
-                                      child: imgUrl != null
-                                          ? Image.network(
-                                              imgUrl,
-                                              width: 64,
-                                              height: 64,
-                                              fit: BoxFit.cover,
-                                              loadingBuilder: (context, child, loadingProgress) {
-                                                if (loadingProgress == null) return child;
-                                                return Container(
-                                                  width: 64,
-                                                  height: 64,
-                                                  color: Colors.grey.shade200,
-                                                  child: const Center(child: CircularProgressIndicator(strokeWidth: 2)),
-                                                );
-                                              },
-                                              errorBuilder: (_, __, ___) => Container(
-                                                width: 64,
-                                                height: 64,
-                                                color: Colors.grey.shade200,
-                                                child: const Icon(Icons.image_not_supported, color: Colors.grey),
-                                              ),
-                                            )
-                                          : Container(
-                                              width: 64,
-                                              height: 64,
-                                              color: Colors.grey.shade200,
-                                              child: const Icon(Icons.image, color: Colors.grey),
-                                            ),
-                                    ),
-                                    title: Text(
-                                      title.isEmpty ? 'Post' : title,
-                                      maxLines: 2,
-                                      overflow: TextOverflow.ellipsis,
-                                      style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
-                                    ),
-                                    subtitle: time.isNotEmpty
-                                        ? Text(time, style: const TextStyle(fontSize: 12, color: Colors.grey))
-                                        : null,
-                                    onTap: () {
-                                      final catId = (post['categories'] is List && (post['categories'] as List).isNotEmpty)
-                                          ? (post['categories'][0] as int)
-                                          : null;
-                                      Navigator.push(
-                                        context,
-                                        MaterialPageRoute(
-                                          builder: (_) => PostDetailScreen(
-                                            title: title,
-                                            htmlContent: content,
-                                            categoryId: catId,
-                                          ),
-                                        ),
-                                      );
-                                    },
-                                  ),
-                                );
-                              },
-                            ),
-            ),
-          ],
-        ),
+        body: _isLoading
+            ? const Center(
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    CircularProgressIndicator(),
+                    SizedBox(height: 16),
+                    Text('Loading categories...'),
+                  ],
+                ),
+              )
+            : _error != null
+                ? Center(
+                    child: Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        Text(_error!),
+                        const SizedBox(height: 16),
+                        ElevatedButton(onPressed: _fetchNotesPosts, child: const Text('Retry')),
+                      ],
+                    ),
+                  )
+                : _buildSubcategoryMenu(),
       ),
     );
   }

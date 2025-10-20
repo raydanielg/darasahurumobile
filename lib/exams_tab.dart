@@ -77,7 +77,7 @@ class _ExamsTabState extends State<ExamsTab> {
     try {
       // Directly fetch subcategories for parent 535 (Exams MITIHANI)
       final subcategoriesResponse = await http.get(
-        Uri.parse('https://darasahuru.ac.tz/wp-json/wp/v2/categories?parent=535'),
+        Uri.parse('https://darasahuru.ac.tz/wp-json/wp/v2/categories?parent=535&per_page=100'),
       );
       if (subcategoriesResponse.statusCode == 200) {
         setState(() {

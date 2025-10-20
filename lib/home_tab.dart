@@ -17,7 +17,7 @@ class _HomeTabState extends State<HomeTab> {
   List<dynamic> _subcategories = [];
   bool _isLoading = true;
   bool _isLoadingMore = false;
-  static const int _perPage = 20;
+  static const int _perPage = 100;
   int _totalPages = 1;
   bool _hasMore = true;
   bool _autoLoadAll = true; // auto fetch all pages
@@ -128,23 +128,23 @@ class _HomeTabState extends State<HomeTab> {
           url = 'https://darasahuru.ac.tz/wp-json/wp/v2/posts?categories=35,36,37,38&per_page=100&_embed=1&page=1';
         } else if (_selectedCategory == 'o-level') {
           // Use specific API for O level
-          url = 'https://darasahuru.ac.tz/wp-json/wp/v2/posts?categories=28&per_page='+_perPage.toString()+'&_embed=1&page=1';
+          url = 'https://darasahuru.ac.tz/wp-json/wp/v2/posts?categories=28&per_page=100&_embed=1&page=1';
         } else if (_selectedCategory == 'primary') {
           // Use combined Primary categories with per_page=100
           url = 'https://darasahuru.ac.tz/wp-json/wp/v2/posts?categories=181,182,210,211,54,212,95,213,214&per_page=100&_embed=1&page=1';
         } else if (_selectedCategory == 'necta-info') {
           // Use specific API for Necta Info with multiple categories
-          url = 'https://darasahuru.ac.tz/wp-json/wp/v2/posts?categories=122,55,102,5,73,30,9,51&per_page='+_perPage.toString()+'&_embed=1&page=1';
+          url = 'https://darasahuru.ac.tz/wp-json/wp/v2/posts?categories=122,55,102,5,73,30,9,51&per_page=100&_embed=1&page=1';
         } else if (_selectedCategory == 'universities-colleges') {
           // Use specific API for Un & Colleges with multiple categories
-          url = 'https://darasahuru.ac.tz/wp-json/wp/v2/posts?categories=57,58,178,66,179,479,466,65,475,97&per_page='+_perPage.toString()+'&_embed=1&page=1';
+          url = 'https://darasahuru.ac.tz/wp-json/wp/v2/posts?categories=57,58,178,66,179,479,466,65,475,97&per_page=100&_embed=1&page=1';
         } else if (_selectedCategory == 'tamisemi') {
           // Tamisemi: per_page=100 and page=1
           url = 'https://darasahuru.ac.tz/wp-json/wp/v2/posts?categories=43&per_page=100&_embed=1&page=1';
         } else {
           final categoryId = _getCategoryId(_selectedCategory!);
           if (categoryId != null) {
-            url = 'https://darasahuru.ac.tz/wp-json/wp/v2/posts?categories=$categoryId&per_page='+_perPage.toString()+'&_embed=1&page=1';
+            url = 'https://darasahuru.ac.tz/wp-json/wp/v2/posts?categories=$categoryId&per_page=100&_embed=1&page=1';
           } else {
             // Fallback: show error if category not found
             setState(() {
@@ -224,23 +224,23 @@ class _HomeTabState extends State<HomeTab> {
       // Build URL based on selected category and next page
       String url;
       if (_selectedCategory == null || _selectedCategory == 'all') {
-        url = 'https://darasahuru.ac.tz/wp-json/wp/v2/posts?per_page='+_perPage.toString()+'&_embed=1&page=$_currentPage';
+        url = 'https://darasahuru.ac.tz/wp-json/wp/v2/posts?per_page=100&_embed=1&page='+_currentPage.toString();
       } else if (_selectedCategory == 'a-level') {
         // Use combined categories 35,36,37,38 with per_page=100 for pagination too
         url = 'https://darasahuru.ac.tz/wp-json/wp/v2/posts?categories=35,36,37,38&per_page=100&_embed=1&page='+_currentPage.toString();
       } else if (_selectedCategory == 'o-level') {
-        url = 'https://darasahuru.ac.tz/wp-json/wp/v2/posts?categories=28&per_page='+_perPage.toString()+'&_embed=1&page=$_currentPage';
+        url = 'https://darasahuru.ac.tz/wp-json/wp/v2/posts?categories=28&per_page=100&_embed=1&page='+_currentPage.toString();
       } else if (_selectedCategory == 'primary') {
         url = 'https://darasahuru.ac.tz/wp-json/wp/v2/posts?categories=181,182,210,211,54,212,95,213,214&per_page=100&_embed=1&page='+_currentPage.toString();
       } else if (_selectedCategory == 'necta-info') {
-        url = 'https://darasahuru.ac.tz/wp-json/wp/v2/posts?categories=122,55,102,5,73,30,9,51&per_page='+_perPage.toString()+'&_embed=1&page=$_currentPage';
+        url = 'https://darasahuru.ac.tz/wp-json/wp/v2/posts?categories=122,55,102,5,73,30,9,51&per_page=100&_embed=1&page='+_currentPage.toString();
       } else if (_selectedCategory == 'universities-colleges') {
-        url = 'https://darasahuru.ac.tz/wp-json/wp/v2/posts?categories=57,58,178,66,179,479,466,65,475,97&per_page='+_perPage.toString()+'&_embed=1&page=$_currentPage';
+        url = 'https://darasahuru.ac.tz/wp-json/wp/v2/posts?categories=57,58,178,66,179,479,466,65,475,97&per_page=100&_embed=1&page='+_currentPage.toString();
       } else if (_selectedCategory == 'tamisemi') {
         url = 'https://darasahuru.ac.tz/wp-json/wp/v2/posts?categories=43&per_page=100&_embed=1&page='+_currentPage.toString();
       } else {
         final categoryId = _getCategoryId(_selectedCategory!);
-        url = 'https://darasahuru.ac.tz/wp-json/wp/v2/posts?categories=$categoryId&per_page='+_perPage.toString()+'&_embed=1&page=$_currentPage';
+        url = 'https://darasahuru.ac.tz/wp-json/wp/v2/posts?categories=$categoryId&per_page=100&_embed=1&page='+_currentPage.toString();
       }
 
       final response = await http.get(Uri.parse(url));
@@ -363,35 +363,12 @@ class _HomeTabState extends State<HomeTab> {
                         : ListView.builder(
                             controller: _scrollController,
                             padding: const EdgeInsets.all(16.0),
-                            itemCount: _posts.length + 1,
+                            itemCount: _posts.length + (_isLoadingMore ? 1 : 0),
                             itemBuilder: (context, index) {
-                              if (index == _posts.length) {
-                                if (_isLoadingMore) {
-                                  return const Padding(
-                                    padding: EdgeInsets.symmetric(vertical: 16),
-                                    child: Center(child: CircularProgressIndicator()),
-                                  );
-                                }
-                                return Padding(
-                                  padding: const EdgeInsets.symmetric(vertical: 8.0),
-                                  child: Row(
-                                    mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                                    children: [
-                                      Expanded(
-                                        child: ElevatedButton(
-                                          onPressed: (!_isLoading && !_isLoadingMore && _hasMore) ? _loadMorePosts : null,
-                                          child: const Text('Load More'),
-                                        ),
-                                      ),
-                                      const SizedBox(width: 12),
-                                      Expanded(
-                                        child: ElevatedButton(
-                                          onPressed: (!_isLoading && !_isLoadingMore && _hasMore) ? _loadAllPosts : null,
-                                          child: const Text('Load All'),
-                                        ),
-                                      ),
-                                    ],
-                                  ),
+                              if (_isLoadingMore && index == _posts.length) {
+                                return const Padding(
+                                  padding: EdgeInsets.symmetric(vertical: 16),
+                                  child: Center(child: CircularProgressIndicator(strokeWidth: 2)),
                                 );
                               }
 

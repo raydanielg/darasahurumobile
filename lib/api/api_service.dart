@@ -6,52 +6,59 @@ class ApiService {
 
   // Simple cache for API responses
   static final Map<String, dynamic> _cache = {};
+  static final Map<String, DateTime> _cacheTime = {};
+  static const Duration _ttl = Duration(minutes: 3);
 
-  /// Fetch a page by slug with caching
-  static Future<String?> fetchPageContent(String slug) async {
-    final cacheKey = 'page_$slug';
-    if (_cache.containsKey(cacheKey)) {
-      return _cache[cacheKey];
-    }
+  // Shared HTTP client
+  static final http.Client _client = http.Client();
+
+  static Future<dynamic> _getJson(String url, {bool useCache = true}) async {
     try {
-      final response = await http.get(
-        Uri.parse('$baseUrl/pages?slug=$slug'),
-      );
-      if (response.statusCode == 200) {
-        final List<dynamic> pages = json.decode(response.body);
-        if (pages.isNotEmpty) {
-          final content = pages[0]['content']['rendered'] as String?;
-          _cache[cacheKey] = content;
-          return content;
+      if (useCache && _cache.containsKey(url)) {
+        final t = _cacheTime[url];
+        if (t != null && DateTime.now().difference(t) < _ttl) {
+          return _cache[url];
         }
+      }
+      final uri = Uri.parse(url);
+      final resp = await _client.get(
+        uri,
+        headers: const {
+          'Accept': 'application/json',
+          'Accept-Encoding': 'gzip',
+          'Connection': 'keep-alive',
+          'User-Agent': 'DarasaHuruApp/1.0 (+flutter)'
+        },
+      );
+      if (resp.statusCode == 200) {
+        final data = json.decode(resp.body);
+        if (useCache) {
+          _cache[url] = data;
+          _cacheTime[url] = DateTime.now();
+        }
+        return data;
       }
       return null;
     } catch (e) {
-      print('Error fetching page: $e');
       return null;
     }
   }
 
+  /// Fetch a page by slug with caching
+  static Future<String?> fetchPageContent(String slug) async {
+    final url = '$baseUrl/pages?slug=$slug';
+    final pages = await _getJson(url) as List<dynamic>?;
+    if (pages != null && pages.isNotEmpty) {
+      return pages[0]['content']?['rendered'] as String?;
+    }
+    return null;
+  }
+
   /// Fetch all pages with caching
   static Future<List<dynamic>?> fetchPages() async {
-    const cacheKey = 'pages';
-    if (_cache.containsKey(cacheKey)) {
-      return _cache[cacheKey];
-    }
-    try {
-      final response = await http.get(
-        Uri.parse('$baseUrl/pages'),
-      );
-      if (response.statusCode == 200) {
-        final pages = json.decode(response.body) as List<dynamic>?;
-        _cache[cacheKey] = pages;
-        return pages;
-      }
-      return null;
-    } catch (e) {
-      print('Error fetching pages: $e');
-      return null;
-    }
+    final url = '$baseUrl/pages';
+    final pages = await _getJson(url) as List<dynamic>?;
+    return pages;
   }
 
   /// Load category data with caching
@@ -62,16 +69,8 @@ class ApiService {
     }
     try {
       // First, fetch subcategories
-      final subcatsResponse = await http.get(
-        Uri.parse('$baseUrl/categories?parent=$id'),
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-        },
-      );
-      print('Subcategories API Status: ${subcatsResponse.statusCode}');
-      print('Subcategories Response Body: ${subcatsResponse.body}');
-      if (subcatsResponse.statusCode == 200) {
-        final List<dynamic> subcats = json.decode(subcatsResponse.body);
+      final subcats = await _getJson('$baseUrl/categories?parent=$id&per_page=100') as List<dynamic>?;
+      if (subcats != null) {
         print('Parsed subcategories: ${subcats.length} items');
         if (subcats.isNotEmpty) {
           final result = {'type': 'subcats', 'data': subcats};
@@ -80,19 +79,14 @@ class ApiService {
         } else {
           print('No subcategories found for ID: $id');
           // If no subcategories, fetch posts
-          final postsResponse = await http.get(
-            Uri.parse('$baseUrl/posts?categories=$id&_embed=1'),
-            headers: {
-              'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-            },
-          );
-          print('Posts API Status: ${postsResponse.statusCode}');
-          print('Posts Response Body: ${postsResponse.body}');
-          if (postsResponse.statusCode == 200) {
-            final List<dynamic> posts = json.decode(postsResponse.body);
+          final posts = await _getJson('$baseUrl/posts?categories=$id&per_page=30&_embed=1') as List<dynamic>?;
+          if (posts != null) {
             print('Parsed posts: ${posts.length} items');
             final result = {'type': 'posts', 'data': posts};
             _cache[cacheKey] = result;
+            // Prefetch next page in background (warm cache)
+            // ignore: unawaited_futures
+            _getJson('$baseUrl/posts?categories=$id&per_page=30&page=2&_embed=1');
             return result;
           } else {
             return {'type': 'error', 'message': 'Failed to load posts'};

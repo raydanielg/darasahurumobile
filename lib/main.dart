@@ -4,6 +4,7 @@ import 'dart:convert';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:flutter/services.dart';
 import 'settings_screen.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'home_tab.dart';
 import 'notes_tab.dart'; // Now contains NewsTab
 import 'my_notes_tab.dart'; // New NotesTab
@@ -25,8 +26,8 @@ class MyApp extends StatefulWidget {
 
 class _MyAppState extends State<MyApp> {
   bool _isDarkMode = false;
-  bool _showOnboarding = true;
-  bool _showTour = true;
+  bool _showOnboarding = false;
+  bool _initialized = false;
 
   void _toggleTheme() {
     setState(() {
@@ -35,7 +36,38 @@ class _MyAppState extends State<MyApp> {
   }
 
   @override
+  void initState() {
+    super.initState();
+    _bootstrap();
+  }
+
+  Future<void> _bootstrap() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final seen = prefs.getBool('seen_onboarding') ?? false;
+      if (!mounted) return;
+      setState(() {
+        _showOnboarding = !seen;
+        _initialized = true;
+      });
+    } catch (_) {
+      if (!mounted) return;
+      setState(() {
+        _showOnboarding = false;
+        _initialized = true;
+      });
+    }
+  }
+
+  @override
   Widget build(BuildContext context) {
+    if (!_initialized) {
+      return const MaterialApp(
+        home: Scaffold(
+          body: Center(child: CircularProgressIndicator()),
+        ),
+      );
+    }
     return MaterialApp(
       title: 'Darasa Huru',
       themeMode: _isDarkMode ? ThemeMode.dark : ThemeMode.light,
@@ -55,10 +87,24 @@ class _MyAppState extends State<MyApp> {
           foregroundColor: Colors.white,
         ),
       ),
-      home: MainScreen(
-        onToggleTheme: _toggleTheme,
-        isDarkMode: _isDarkMode,
-      ),
+      home: _showOnboarding
+          ? OnboardingScreen(
+              onFinished: () async {
+                try {
+                  final prefs = await SharedPreferences.getInstance();
+                  await prefs.setBool('seen_onboarding', true);
+                } catch (_) {}
+                if (mounted) {
+                  setState(() {
+                    _showOnboarding = false;
+                  });
+                }
+              },
+            )
+          : MainScreen(
+              onToggleTheme: _toggleTheme,
+              isDarkMode: _isDarkMode,
+            ),
     );
   }
 }

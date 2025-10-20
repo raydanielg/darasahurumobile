@@ -31,10 +31,11 @@ class PostDetailScreen extends StatefulWidget {
 class _PostDetailScreenState extends State<PostDetailScreen> {
   List<dynamic> _recommendedPosts = [];
   bool _isLoadingRecommendations = true;
-  bool _useWebView = false; // Use flutter_html by default to avoid clipping
+  bool _useWebView = true; // Default to WebView for full web preview experience
   late WebViewController _webViewController;
   bool _isWebViewLoading = true;
   String? _webViewError;
+  double _textScale = 1.0;
 
   @override
   void initState() {
@@ -43,6 +44,36 @@ class _PostDetailScreenState extends State<PostDetailScreen> {
     if (_useWebView) {
       _webViewController = _createWebViewController();
     }
+  }
+
+  bool _isDocumentLink(Uri uri) {
+    try {
+      final path = uri.path.toLowerCase();
+      final host = uri.host.toLowerCase();
+      if (path.endsWith('.pdf') ||
+          path.endsWith('.doc') ||
+          path.endsWith('.docx') ||
+          path.endsWith('.ppt') ||
+          path.endsWith('.pptx') ||
+          path.endsWith('.xls') ||
+          path.endsWith('.xlsx')) {
+        return true;
+      }
+      if (host.contains('drive.google.com') || host.contains('docs.google.com') || host.contains('dropbox.com')) {
+        return true;
+      }
+      return false;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  String _fileNameFromUri(Uri uri) {
+    try {
+      final segs = uri.pathSegments;
+      if (segs.isNotEmpty) return segs.last;
+    } catch (_) {}
+    return uri.toString();
   }
 
   Future<bool> _openInternalPostById(int id) async {
@@ -236,12 +267,8 @@ class _PostDetailScreenState extends State<PostDetailScreen> {
           }
           // Fallback for srcset/data-srcset (pick first)
           String srcset = attrs["srcset"] ?? attrs["data-srcset"] ?? "";
-          if (src.isEmpty && srcset.isNotEmpty) {
-            final set = srcset.split(",");
-            if (set.isNotEmpty) {
-              src = set.first.trim().split(" ").first;
-            }
-          }
+          // Normalize base URL early
+          src = _normalizeImageUrl(src);
 
           // If we still don't have a source, render nothing to avoid flicker
           if (src.isEmpty) {
@@ -253,6 +280,14 @@ class _PostDetailScreenState extends State<PostDetailScreen> {
             final dpr = MediaQuery.of(ctx).devicePixelRatio;
             final targetCacheWidth = maxWidth.isFinite && maxWidth > 0 ? (maxWidth * dpr).round() : null;
 
+            // If srcset is available, pick the best candidate near our target width
+            if (srcset.isNotEmpty) {
+              final picked = _pickBestFromSrcset(srcset, targetCacheWidth);
+              if (picked != null && picked.isNotEmpty) {
+                src = _normalizeImageUrl(picked);
+              }
+            }
+
             if (src.toLowerCase().endsWith('.webp')) {
               return SizedBox(
                 width: maxWidth.isFinite ? maxWidth : null,
@@ -263,10 +298,14 @@ class _PostDetailScreenState extends State<PostDetailScreen> {
             return SizedBox(
               width: maxWidth.isFinite ? maxWidth : null,
               child: CachedNetworkImage(
+                key: ValueKey(src),
                 imageUrl: src,
                 fit: BoxFit.fitWidth,
                 memCacheWidth: targetCacheWidth,
                 alignment: Alignment.topLeft,
+                fadeInDuration: const Duration(milliseconds: 0),
+                fadeOutDuration: const Duration(milliseconds: 0),
+                useOldImageOnUrlChange: true,
                 placeholder: (context, url) => Container(
                   height: 200,
                   alignment: Alignment.center,
@@ -291,6 +330,35 @@ class _PostDetailScreenState extends State<PostDetailScreen> {
             );
           });
         }),
+        TagExtension(tagsToExtend: {"a"}, builder: (context) {
+          final attrs = context.attributes;
+          final href = attrs["href"] ?? "";
+          if (href.isEmpty) return const SizedBox.shrink();
+          final norm = _normalizeImageUrl(href);
+          final uri = Uri.tryParse(norm);
+          if (uri != null && _isDocumentLink(uri)) {
+            final name = _fileNameFromUri(uri);
+            return Container(
+              margin: const EdgeInsets.symmetric(vertical: 8.0),
+              decoration: BoxDecoration(
+                color: Colors.grey.shade50,
+                border: Border.all(color: Colors.grey.shade300),
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: ListTile(
+                leading: const Icon(Icons.insert_drive_file),
+                title: Text(name, maxLines: 1, overflow: TextOverflow.ellipsis),
+                subtitle: Text(uri.host, maxLines: 1, overflow: TextOverflow.ellipsis),
+                trailing: ElevatedButton(
+                  onPressed: () => _openExternal(uri),
+                  child: const Text('Open'),
+                ),
+                onTap: () => _openExternal(uri),
+              ),
+            );
+          }
+          return const SizedBox.shrink();
+        }),
       ],
     );
   }
@@ -303,12 +371,14 @@ class _PostDetailScreenState extends State<PostDetailScreen> {
       <head>
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
         <style>
+          :root { --dh-scale: 1; }
           body {
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
             line-height: 1.6;
             color: #333;
             padding: 16px;
             margin: 0;
+            font-size: calc(16px * var(--dh-scale));
           }
           h1, h2, h3, h4, h5, h6 {
             margin-top: 24px;
@@ -350,6 +420,37 @@ class _PostDetailScreenState extends State<PostDetailScreen> {
       </body>
       </html>
     ''';
+  }
+
+  void _reloadWebView() {
+    try {
+      _webViewController.reload();
+    } catch (_) {}
+  }
+
+  Future<void> _openOriginalInBrowser() async {
+    try {
+      final link = widget.postUrl ?? _extractFirstLink(widget.htmlContent);
+      if (link != null) {
+        final uri = Uri.tryParse(link);
+        if (uri != null) {
+          await _openExternal(uri);
+          return;
+        }
+      }
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Original link not available.')),
+      );
+    } catch (_) {}
+  }
+
+  void _adjustTextScale(double delta) {
+    setState(() {
+      _textScale = (_textScale + delta).clamp(0.8, 1.8);
+    });
+    try {
+      _webViewController.runJavaScript("document.documentElement.style.setProperty('--dh-scale', '$_textScale')");
+    } catch (_) {}
   }
 
   String _transformMediaEmbeds(String html) {
@@ -617,7 +718,7 @@ class _PostDetailScreenState extends State<PostDetailScreen> {
         final srcMatch = RegExp(r'''src=["']([^"']+)["']''').firstMatch(imgAttributes);
         final altMatch = RegExp(r'''alt=["']([^"']+)["']''').firstMatch(imgAttributes);
 
-        final src = srcMatch?.group(1) ?? '';
+        final src = _normalizeImageUrl(srcMatch?.group(1) ?? '');
         final alt = altMatch?.group(1) ?? '';
 
         if (src.isNotEmpty) {
@@ -629,6 +730,63 @@ class _PostDetailScreenState extends State<PostDetailScreen> {
       return html;
     } catch (_) {
       return html;
+    }
+  }
+
+  // Choose best candidate from srcset string near a target width (in px)
+  String? _pickBestFromSrcset(String srcset, int? targetPx) {
+    try {
+      final parts = srcset.split(',').map((s) => s.trim()).where((s) => s.isNotEmpty).toList();
+      if (parts.isEmpty) return null;
+      if (targetPx == null) {
+        // pick the last (usually largest)
+        final last = parts.last.split(' ').first;
+        return last;
+      }
+      // Parse descriptors like "url 300w"
+      int bestDiff = 1 << 30;
+      String? bestUrl;
+      for (final p in parts) {
+        final segs = p.split(RegExp(r'\s+'));
+        if (segs.isEmpty) continue;
+        final url = segs[0];
+        int? width;
+        if (segs.length > 1 && segs[1].endsWith('w')) {
+          width = int.tryParse(segs[1].substring(0, segs[1].length - 1));
+        }
+        width ??= int.tryParse(RegExp(r'(\d+)').firstMatch(p)?.group(1) ?? '');
+        if (width != null) {
+          final diff = (width - targetPx).abs();
+          if (diff < bestDiff) {
+            bestDiff = diff;
+            bestUrl = url;
+          }
+        } else {
+          bestUrl ??= url; // fallback
+        }
+      }
+      return bestUrl ?? parts.last.split(' ').first;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  // Normalize image URLs: handle relative paths and protocol-relative
+  String _normalizeImageUrl(String src) {
+    try {
+      if (src.isEmpty) return src;
+      String s = src.trim();
+      if (s.startsWith('//')) {
+        s = 'https:' + s;
+      } else if (s.startsWith('/')) {
+        s = Uri.parse('https://darasahuru.ac.tz').resolve(s).toString();
+      } else if (!s.startsWith('http')) {
+        // Some themes may emit relative paths without leading slash
+        s = Uri.parse('https://darasahuru.ac.tz').resolve('/' + s).toString();
+      }
+      return s;
+    } catch (_) {
+      return src;
     }
   }
 
@@ -682,7 +840,28 @@ class _PostDetailScreenState extends State<PostDetailScreen> {
               overflow: TextOverflow.ellipsis,
             ),
             elevation: 0,
-            actions: const [],
+            actions: [
+              IconButton(
+                tooltip: 'Smaller text',
+                icon: const Icon(Icons.text_decrease),
+                onPressed: () => _adjustTextScale(-0.1),
+              ),
+              IconButton(
+                tooltip: 'Larger text',
+                icon: const Icon(Icons.text_increase),
+                onPressed: () => _adjustTextScale(0.1),
+              ),
+              IconButton(
+                tooltip: 'Refresh',
+                icon: const Icon(Icons.refresh),
+                onPressed: _reloadWebView,
+              ),
+              IconButton(
+                tooltip: 'Open in browser',
+                icon: const Icon(Icons.open_in_browser),
+                onPressed: _openOriginalInBrowser,
+              ),
+            ],
           ),
           body: Container(
             margin: const EdgeInsets.all(16.0),
@@ -891,36 +1070,49 @@ class _WebPImageWidgetState extends State<_WebPImageWidget> {
       );
     }
 
-    return CachedNetworkImage(
-      imageUrl: widget.imageUrl,
-      placeholder: (context, url) => Container(
-        width: double.infinity,
-        height: 200,
-        decoration: BoxDecoration(
-          color: Colors.grey.shade100,
-          borderRadius: BorderRadius.circular(8),
-        ),
-        child: const Center(
-          child: CircularProgressIndicator(),
-        ),
-      ),
-      errorWidget: (context, url, error) {
-        // If it's a WEBP image and failed to load, try alternative handling
-        if (widget.imageUrl.toLowerCase().contains('.webp')) {
-          return _buildWebPFallback();
-        }
-        return _buildErrorWidget();
-      },
-      imageBuilder: (context, imageProvider) => Container(
-        width: double.infinity,
-        decoration: BoxDecoration(
-          borderRadius: BorderRadius.circular(8),
-          image: DecorationImage(
-            image: imageProvider,
-            fit: BoxFit.contain,
+    return LayoutBuilder(
+      builder: (ctx, constraints) {
+        final maxWidth = constraints.maxWidth.isFinite ? constraints.maxWidth : MediaQuery.of(ctx).size.width;
+        final dpr = MediaQuery.of(ctx).devicePixelRatio;
+        final targetCacheWidth = (maxWidth.isFinite && maxWidth > 0) ? (maxWidth * dpr).round() : null;
+        final key = ValueKey('${widget.imageUrl}@$targetCacheWidth');
+
+        return CachedNetworkImage(
+          key: key,
+          imageUrl: widget.imageUrl,
+          fit: BoxFit.fitWidth,
+          memCacheWidth: targetCacheWidth,
+          alignment: Alignment.topLeft,
+          fadeInDuration: const Duration(milliseconds: 0),
+          fadeOutDuration: const Duration(milliseconds: 0),
+          useOldImageOnUrlChange: true,
+          httpHeaders: const {
+            'Accept': 'image/webp,image/*,*/*;q=0.8',
+          },
+          placeholder: (context, url) => Container(
+            height: 200,
+            alignment: Alignment.center,
+            child: const CircularProgressIndicator(),
           ),
-        ),
-      ),
+          errorWidget: (context, url, error) {
+            // If it's a WEBP image and failed to load, try alternative handling
+            if (widget.imageUrl.toLowerCase().contains('.webp')) {
+              return _buildWebPFallback();
+            }
+            return _buildErrorWidget();
+          },
+          imageBuilder: (context, imageProvider) => Container(
+            width: double.infinity,
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(8),
+              image: DecorationImage(
+                image: imageProvider,
+                fit: BoxFit.contain,
+              ),
+            ),
+          ),
+        );
+      },
     );
   }
 
