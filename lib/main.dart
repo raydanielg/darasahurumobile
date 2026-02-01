@@ -224,9 +224,15 @@ class _MainScreenState extends State<MainScreen> {
         foregroundColor: Colors.black,
         title: Row(
           children: [
-            Image.asset(
-              'assets/Darasa-Huru-Juu-New.png',
-              height: 40,
+            Flexible(
+              child: SizedBox(
+                height: 40,
+                child: FittedBox(
+                  fit: BoxFit.contain,
+                  alignment: Alignment.centerLeft,
+                  child: Image.asset('assets/Darasa-Huru-Juu-New.png'),
+                ),
+              ),
             ),
           ],
         ),
@@ -256,9 +262,15 @@ class _MainScreenState extends State<MainScreen> {
                     appBar: AppBar(
                       title: Row(
                         children: [
-                          Image.asset(
-                            'assets/Darasa-Huru-Juu-New.png',
-                            height: 40,
+                          Flexible(
+                            child: SizedBox(
+                              height: 40,
+                              child: FittedBox(
+                                fit: BoxFit.contain,
+                                alignment: Alignment.centerLeft,
+                                child: Image.asset('assets/Darasa-Huru-Juu-New.png'),
+                              ),
+                            ),
                           ),
                         ],
                       ),

@@ -39,6 +39,9 @@ class _PostDetailScreenState extends State<PostDetailScreen> {
   String? _webViewError;
   double _textScale = 1.0;
 
+  // TODO: Replace with your real WhatsApp target number (international format, no + or spaces)
+  static const String _whatsAppTargetPhone = '255712240240';
+
   @override
   void initState() {
     super.initState();
@@ -194,6 +197,14 @@ class _PostDetailScreenState extends State<PostDetailScreen> {
           },
           onNavigationRequest: (NavigationRequest request) {
             final uri = Uri.tryParse(request.url);
+            if (uri != null && (uri.scheme == 'tel' || uri.scheme == 'mailto')) {
+              _openExternal(uri);
+              return NavigationDecision.prevent;
+            }
+            if (uri != null && uri.scheme.isNotEmpty && uri.scheme != 'http' && uri.scheme != 'https') {
+              _openExternal(uri);
+              return NavigationDecision.prevent;
+            }
             if (uri != null && _isPdfOrDrive(uri)) {
               // Open PDFs/Drive externally
               _openExternal(uri);
@@ -201,6 +212,10 @@ class _PostDetailScreenState extends State<PostDetailScreen> {
             }
             if (request.url.contains('darasahuru.ac.tz')) {
               _handleInternalLink(request.url);
+              return NavigationDecision.prevent;
+            }
+            if (uri != null) {
+              _openExternal(uri);
               return NavigationDecision.prevent;
             }
             return NavigationDecision.navigate;
@@ -297,6 +312,7 @@ class _PostDetailScreenState extends State<PostDetailScreen> {
         'h1': Style(color: Colors.red.shade700),
         'h2': Style(color: Colors.blue.shade700),
         'h3': Style(color: Colors.green.shade700),
+        'h4': Style(color: const Color(0xFFEA003E)),
         'p': Style(
           margin: Margins.only(bottom: 12.0),
         ),
@@ -384,35 +400,6 @@ class _PostDetailScreenState extends State<PostDetailScreen> {
             );
           });
         }),
-        TagExtension(tagsToExtend: {"a"}, builder: (context) {
-          final attrs = context.attributes;
-          final href = attrs["href"] ?? "";
-          if (href.isEmpty) return const SizedBox.shrink();
-          final norm = _normalizeImageUrl(href);
-          final uri = Uri.tryParse(norm);
-          if (uri != null && _isDocumentLink(uri)) {
-            final name = _fileNameFromUri(uri);
-            return Container(
-              margin: const EdgeInsets.symmetric(vertical: 8.0),
-              decoration: BoxDecoration(
-                color: Colors.grey.shade50,
-                border: Border.all(color: Colors.grey.shade300),
-                borderRadius: BorderRadius.circular(8),
-              ),
-              child: ListTile(
-                leading: const Icon(Icons.insert_drive_file),
-                title: Text(name, maxLines: 1, overflow: TextOverflow.ellipsis),
-                subtitle: Text(uri.host, maxLines: 1, overflow: TextOverflow.ellipsis),
-                trailing: ElevatedButton(
-                  onPressed: () => _openExternal(uri),
-                  child: const Text('Open'),
-                ),
-                onTap: () => _openExternal(uri),
-              ),
-            );
-          }
-          return const SizedBox.shrink();
-        }),
       ],
     );
   }
@@ -444,6 +431,7 @@ class _PostDetailScreenState extends State<PostDetailScreen> {
           h1 { color: #c62828; }
           h2 { color: #1565c0; }
           h3 { color: #2e7d32; }
+          h4 { color: #ea003e; }
           p {
             margin-bottom: 16px;
           }
@@ -819,6 +807,37 @@ class _PostDetailScreenState extends State<PostDetailScreen> {
     }
   }
 
+  Future<void> _openPreferred(Uri nativeUri, Uri webUri) async {
+    try {
+      if (await canLaunchUrl(nativeUri)) {
+        final ok = await launchUrl(nativeUri, mode: LaunchMode.externalApplication);
+        if (ok) return;
+      }
+    } catch (_) {
+      // ignore and fallback to web
+    }
+    await _openExternal(webUri);
+  }
+
+  String _buildWhatsAppMessage() {
+    final link = widget.postUrl ?? _extractFirstLink(widget.htmlContent);
+    final base = 'Habari, naomba msaada.';
+    if (link == null || link.isEmpty) return '${base}\n\n${widget.title}';
+    return '${base}\n\n${widget.title}\n$link';
+  }
+
+  Future<void> _openWhatsAppChat() async {
+    final phone = _whatsAppTargetPhone;
+    final text = _buildWhatsAppMessage();
+    final native = Uri.parse(
+      'whatsapp://send?phone=$phone&text=${Uri.encodeComponent(text)}',
+    );
+    final web = Uri.parse(
+      'https://wa.me/$phone?text=${Uri.encodeComponent(text)}',
+    );
+    await _openPreferred(native, web);
+  }
+
   void _showImageDialog(String imageUrl, String alt) {
     showDialog(
       context: context,
@@ -1053,6 +1072,11 @@ class _PostDetailScreenState extends State<PostDetailScreen> {
             ],
           ),
           body: _wrapWithBackground(_buildWebViewContent()),
+          floatingActionButton: _WavyFab(
+            color: const Color(0xFF25D366),
+            onPressed: _openWhatsAppChat,
+            child: const _WhatsAppFabIcon(),
+          ),
         );
       }
 
@@ -1166,6 +1190,11 @@ class _PostDetailScreenState extends State<PostDetailScreen> {
             ),
           ),
         ),
+        floatingActionButton: _WavyFab(
+          color: const Color(0xFF25D366),
+          onPressed: _openWhatsAppChat,
+          child: const _WhatsAppFabIcon(),
+        ),
       );
     } catch (e) {
       return Scaffold(
@@ -1177,6 +1206,114 @@ class _PostDetailScreenState extends State<PostDetailScreen> {
         ),
       );
     }
+  }
+}
+
+class _WhatsAppFabIcon extends StatelessWidget {
+  const _WhatsAppFabIcon();
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: 28,
+      height: 28,
+      decoration: const BoxDecoration(
+        color: Colors.white,
+        shape: BoxShape.circle,
+      ),
+      padding: const EdgeInsets.all(4),
+      child: Image.asset(
+        'assets/whatsapp.png',
+        fit: BoxFit.contain,
+        errorBuilder: (_, __, ___) => const Icon(Icons.chat, size: 18, color: Colors.black87),
+      ),
+    );
+  }
+}
+
+class _WavyFab extends StatefulWidget {
+  final VoidCallback onPressed;
+  final Widget child;
+  final Color color;
+
+  const _WavyFab({
+    required this.onPressed,
+    required this.child,
+    required this.color,
+  });
+
+  @override
+  State<_WavyFab> createState() => _WavyFabState();
+}
+
+class _WavyFabState extends State<_WavyFab> with SingleTickerProviderStateMixin {
+  late final AnimationController _controller;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 1400),
+    )..repeat();
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      width: 76,
+      height: 76,
+      child: AnimatedBuilder(
+        animation: _controller,
+        builder: (context, _) {
+          final t = _controller.value;
+          final s1 = 1.0 + t * 0.75;
+          final s2 = 1.0 + ((t + 0.5) % 1.0) * 0.75;
+          final a1 = (1.0 - t).clamp(0.0, 1.0);
+          final a2 = (1.0 - ((t + 0.5) % 1.0)).clamp(0.0, 1.0);
+
+          Widget ring(double scale, double alpha) {
+            return Center(
+              child: Transform.scale(
+                scale: scale,
+                child: Opacity(
+                  opacity: 0.22 * alpha,
+                  child: Container(
+                    width: 44,
+                    height: 44,
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      color: widget.color,
+                    ),
+                  ),
+                ),
+              ),
+            );
+          }
+
+          return Stack(
+            alignment: Alignment.center,
+            children: [
+              IgnorePointer(child: ring(s2, a2)),
+              IgnorePointer(child: ring(s1, a1)),
+              FloatingActionButton(
+                mini: true,
+                onPressed: widget.onPressed,
+                backgroundColor: widget.color,
+                foregroundColor: Colors.white,
+                child: widget.child,
+              ),
+            ],
+          );
+        },
+      ),
+    );
   }
 }
 

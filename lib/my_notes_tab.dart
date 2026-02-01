@@ -22,6 +22,7 @@ class _NotesTabState extends State<NotesTab> {
   bool _isLoading = true;
   bool _isTapping = false;
   String? _error;
+  Future<void> Function()? _retry;
   String? _selectedSubcategory; // id as string
   String? _currentCategoryName;
   
@@ -121,12 +122,42 @@ class _NotesTabState extends State<NotesTab> {
     return [];
   }
 
+  void _notifyFetchError(String message, {Future<void> Function()? retry, Object? error}) {
+    if (error != null) {
+      debugPrint('NotesTab fetch error: $error');
+    }
+    _error = message;
+    _retry = retry;
+    if (!mounted) return;
+
+    final snackBar = SnackBar(
+      content: Text(message),
+      action: retry == null
+          ? null
+          : SnackBarAction(
+              label: 'Retry',
+              onPressed: () {
+                final fn = _retry;
+                if (fn != null) {
+                  fn();
+                }
+              },
+            ),
+    );
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(snackBar);
+  }
+
   Future<void> _openCategory(int id, String name) async {
     _error = null;
+    _retry = null;
+    final prevSubcats = List<dynamic>.from(_subcategories);
+    final prevName = _currentCategoryName;
     // Push current level to stack before moving deeper
     setState(() {
-      _subcatStack.add(List<dynamic>.from(_subcategories));
-      _nameStack.add(_currentCategoryName);
+      _subcatStack.add(prevSubcats);
+      _nameStack.add(prevName);
     });
 
     // Try cached first
@@ -168,6 +199,7 @@ class _NotesTabState extends State<NotesTab> {
           setState(() {
             _isTapping = false;
             _error = 'Please turn on the internet and try again.';
+            _retry = () => _openCategory(id, name);
           });
         }
       }
@@ -175,20 +207,80 @@ class _NotesTabState extends State<NotesTab> {
       if (mounted) {
         setState(() {
           _isTapping = false;
-          _error = 'Failed to open category: $e';
+          // Restore previous level to avoid getting stuck in an empty/dead state
+          if (_subcatStack.isNotEmpty) {
+            _subcatStack.removeLast();
+          }
+          if (_nameStack.isNotEmpty) {
+            _nameStack.removeLast();
+          }
+          _subcategories = prevSubcats;
+          _currentCategoryName = prevName;
         });
+        _notifyFetchError(
+          'Please turn on the internet and try again.',
+          retry: () => _openCategoryRetry(id, name),
+          error: e,
+        );
       }
+    }
+  }
+
+  Future<void> _openCategoryRetry(int id, String name) async {
+    setState(() {
+      _isTapping = true;
+      _error = null;
+      _retry = null;
+    });
+    try {
+      final children = await _fetchChildCategories(id);
+      if (children.isNotEmpty) {
+        if (!mounted) return;
+        setState(() {
+          _applyCategoryResult({'type': 'subcats', 'data': children}, id, name);
+          _isTapping = false;
+        });
+        await _saveCachedCategory(id, {'type': 'subcats', 'data': children});
+      } else {
+        final resp = await http.get(Uri.parse('https://darasahuru.ac.tz/wp-json/wp/v2/posts?categories=' + id.toString() + '&per_page=100&page=1&_embed=1'));
+        if (resp.statusCode == 200) {
+          final posts = json.decode(resp.body) as List;
+          if (!mounted) return;
+          setState(() {
+            _applyCategoryResult({'type': 'posts', 'data': posts}, id, name);
+            _isTapping = false;
+          });
+          await _saveCachedCategory(id, {'type': 'posts', 'data': posts});
+        } else {
+          if (!mounted) return;
+          setState(() {
+            _isTapping = false;
+            _error = 'Please turn on the internet and try again.';
+            _retry = () => _openCategoryRetry(id, name);
+          });
+        }
+      }
+    } catch (_) {
+      if (!mounted) return;
+      setState(() {
+        _isTapping = false;
+        _error = 'Please turn on the internet and try again.';
+        _retry = () => _openCategoryRetry(id, name);
+      });
     }
   }
 
   Future<void> _fetchRootAndSubcategories() async {
     setState(() {
-      _isLoading = true;
+      _isLoading = _subcategories.isEmpty;
       _error = null;
+      _retry = null;
       _selectedSubcategory = null;
-      _posts = [];
-      _subcategories = [];
-      _subcatStack.clear();
+      // Keep any existing data visible; only clear when we truly have none.
+      if (_subcategories.isEmpty) {
+        _posts = [];
+        _subcatStack.clear();
+      }
     });
 
     try {
@@ -213,15 +305,23 @@ class _NotesTabState extends State<NotesTab> {
         } catch (_) {}
       } else {
         setState(() {
-          _error = 'Please turn on the internet and try again.';
           _isLoading = false;
         });
+        _notifyFetchError(
+          'Please turn on the internet and try again.',
+          retry: _fetchRootAndSubcategories,
+          error: 'root/subcategories status ${subsResp.statusCode}',
+        );
       }
     } catch (e) {
       setState(() {
-        _error = 'Please turn on the internet and try again.';
         _isLoading = false;
       });
+      _notifyFetchError(
+        'Please turn on the internet and try again.',
+        retry: _fetchRootAndSubcategories,
+        error: e,
+      );
     }
   }
 
@@ -288,7 +388,8 @@ class _NotesTabState extends State<NotesTab> {
     setState(() {
       _isLoading = true;
       _error = null;
-      _posts = [];
+      _retry = null;
+      // Keep current list visible while refreshing
     });
     try {
       final resp = await http.get(Uri.parse('https://darasahuru.ac.tz/wp-json/wp/v2/posts?categories=$subId&per_page=100&page=1&_embed=1'));
@@ -306,15 +407,23 @@ class _NotesTabState extends State<NotesTab> {
         } catch (_) {}
       } else {
         setState(() {
-          _error = 'Please turn on the internet and try again.';
           _isLoading = false;
         });
+        _notifyFetchError(
+          'Please turn on the internet and try again.',
+          retry: () => _fetchPostsForSubcategory(subId),
+          error: 'posts status ${resp.statusCode}',
+        );
       }
     } catch (e) {
       setState(() {
-        _error = 'Please turn on the internet and try again.';
         _isLoading = false;
       });
+      _notifyFetchError(
+        'Please turn on the internet and try again.',
+        retry: () => _fetchPostsForSubcategory(subId),
+        error: e,
+      );
     }
   }
 
@@ -371,6 +480,74 @@ class _NotesTabState extends State<NotesTab> {
     return null;
   }
 
+  Widget _buildErrorState() {
+    final bottomInset = MediaQuery.of(context).padding.bottom;
+    return Center(
+      child: Padding(
+        padding: EdgeInsets.fromLTRB(16, 16, 16, 16 + bottomInset),
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 420),
+          child: Card(
+            elevation: 0,
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(16),
+              side: BorderSide(color: Colors.grey.shade300),
+            ),
+            child: Padding(
+              padding: const EdgeInsets.all(16),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Container(
+                    width: 48,
+                    height: 48,
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFEA003E).withOpacity(0.12),
+                      borderRadius: BorderRadius.circular(14),
+                    ),
+                    child: const Icon(Icons.wifi_off, color: Color(0xFFEA003E)),
+                  ),
+                  const SizedBox(height: 12),
+                  const Text(
+                    'Imeshindikana kufungua.',
+                    style: TextStyle(fontWeight: FontWeight.w800, fontSize: 16),
+                    textAlign: TextAlign.center,
+                  ),
+                  const SizedBox(height: 6),
+                  Text(
+                    _error ?? 'Please try again.',
+                    style: TextStyle(color: Colors.grey.shade700),
+                    textAlign: TextAlign.center,
+                  ),
+                  const SizedBox(height: 14),
+                  SizedBox(
+                    width: double.infinity,
+                    child: ElevatedButton.icon(
+                      onPressed: _retry == null
+                          ? null
+                          : () async {
+                              final fn = _retry;
+                              if (fn != null) await fn();
+                            },
+                      icon: const Icon(Icons.refresh),
+                      label: const Text('Reload'),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: const Color(0xFFEA003E),
+                        foregroundColor: Colors.white,
+                        padding: const EdgeInsets.symmetric(vertical: 12),
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return WillPopScope(
@@ -380,6 +557,7 @@ class _NotesTabState extends State<NotesTab> {
             _selectedSubcategory = null;
             _posts = [];
             _error = null;
+            _retry = null;
           });
           return false;
         }
@@ -387,6 +565,7 @@ class _NotesTabState extends State<NotesTab> {
           setState(() {
             _subcategories = _subcatStack.removeLast();
             _error = null;
+            _retry = null;
           });
           return false;
         }
@@ -394,8 +573,8 @@ class _NotesTabState extends State<NotesTab> {
       },
       child: _isLoading
           ? const Center(child: PulsingRingsLoader(color: Colors.red))
-          : _error != null
-              ? Center(child: Text(_error!))
+          : (_error != null && _subcategories.isEmpty && _posts.isEmpty)
+              ? _buildErrorState()
               : _selectedSubcategory == null
                   ? Container(
                       color: const Color(0xFFFDF7FF),
@@ -509,7 +688,10 @@ class _NotesTabState extends State<NotesTab> {
                                   ),
                                   child: InkWell(
                                     borderRadius: BorderRadius.circular(14.0),
-                                    onTap: () => _openCategory(id, name),
+                                    onTap: () async {
+                                      _retry = () => _openCategoryRetry(id, name);
+                                      await _openCategory(id, name);
+                                    },
                                     child: Container(
                                       padding: const EdgeInsets.symmetric(
                                           horizontal: 16.0, vertical: 14.0),
