@@ -5,10 +5,20 @@ plugins {
     id("dev.flutter.flutter-gradle-plugin")
 }
 
+import java.util.Properties
+import java.io.FileInputStream
+
+val keystoreProperties = Properties().apply {
+    val f = rootProject.file("key.properties")
+    if (f.exists()) {
+        load(FileInputStream(f))
+    }
+}
+
 android {
     namespace = "com.darasahuru.co.tz"
     compileSdk = flutter.compileSdkVersion
-    ndkVersion = "27.0.12077973"
+    ndkVersion = "27.3.13750724"
 
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_11
@@ -30,11 +40,22 @@ android {
         versionName = flutter.versionName
     }
 
+    signingConfigs {
+        create("release") {
+            val storeFilePath = keystoreProperties.getProperty("storeFile")
+            if (storeFilePath != null) {
+                storeFile = file(storeFilePath)
+            }
+            storePassword = keystoreProperties.getProperty("storePassword")
+            keyAlias = keystoreProperties.getProperty("keyAlias")
+            keyPassword = keystoreProperties.getProperty("keyPassword")
+        }
+    }
+
     buildTypes {
         release {
-            // TODO: Add your own signing config for the release build.
-            // Signing with the debug keys for now, so `flutter run --release` works.
-            signingConfig = signingConfigs.getByName("debug")
+            // Use release keystore for Play Console
+            signingConfig = signingConfigs.getByName("release")
         }
     }
 }

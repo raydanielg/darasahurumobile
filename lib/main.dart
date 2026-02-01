@@ -1,10 +1,13 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:flutter/services.dart';
+import 'package:onesignal_flutter/onesignal_flutter.dart';
 import 'settings_screen.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'widgets/loading_indicator.dart';
 import 'home_tab.dart';
 import 'notes_tab.dart'; // Now contains NewsTab
 import 'my_notes_tab.dart'; // New NotesTab
@@ -12,8 +15,12 @@ import 'exams_tab.dart';
 import 'post_detail_screen.dart';
 import 'onboarding_screen.dart';
 import 'feature_tour_screen.dart';
+import 'api/api_service.dart';
+
+final GlobalKey<NavigatorState> navigatorKey = GlobalKey<NavigatorState>();
 
 void main() {
+  WidgetsFlutterBinding.ensureInitialized();
   runApp(const MyApp());
 }
 
@@ -43,8 +50,10 @@ class _MyAppState extends State<MyApp> {
 
   Future<void> _bootstrap() async {
     try {
+      await _initNotifications();
       final prefs = await SharedPreferences.getInstance();
       final seen = prefs.getBool('seen_onboarding') ?? false;
+      _warmupHomeData();
       if (!mounted) return;
       setState(() {
         _showOnboarding = !seen;
@@ -59,21 +68,63 @@ class _MyAppState extends State<MyApp> {
     }
   }
 
+  Future<void> _initNotifications() async {
+    OneSignal.Debug.setLogLevel(OSLogLevel.verbose);
+    OneSignal.initialize('601ee3fa-af58-4b4f-b053-f8ffa3f438f9');
+    OneSignal.Notifications.requestPermission(true);
+
+    OneSignal.Notifications.addClickListener((event) {
+      final data = event.notification.additionalData;
+      // Support both custom 'post_url' and standard 'url' keys
+      final postUrl =
+          data?['post_url'] as String? ??
+          data?['url'] as String?;
+      final title = event.notification.title ?? 'Post';
+
+      if (postUrl != null) {
+        navigatorKey.currentState?.push(
+          MaterialPageRoute(
+            builder: (_) => PostDetailScreen(
+              title: title,
+              htmlContent: '',
+              categoryId: null,
+              postUrl: postUrl,
+            ),
+          ),
+        );
+      }
+    });
+  }
+
+  void _warmupHomeData() {
+    const base = 'https://darasahuru.ac.tz/wp-json/wp/v2';
+    ApiService.getJson('$base/posts?per_page=20&_embed=1&page=1');
+    ApiService.getJson('$base/posts?categories=504,34,506,534&per_page=20&_embed=1&page=1');
+    ApiService.getJson('$base/posts?categories=12,47,48,24&per_page=20&_embed=1&page=1');
+    ApiService.getJson('$base/posts?categories=181,182,210,211,54,212,95,213,214&per_page=20&_embed=1&page=1');
+    ApiService.getJson('$base/posts?categories=122,55,102,5,73,30,9,51&per_page=20&_embed=1&page=1');
+    ApiService.getJson('$base/posts?categories=57,58,178,66,179,479,466,65,475,97&per_page=20&_embed=1&page=1');
+    ApiService.getJson('$base/posts?categories=43&per_page=20&_embed=1&page=1');
+    ApiService.getJson('$base/categories?per_page=100');
+  }
+
   @override
   Widget build(BuildContext context) {
     if (!_initialized) {
-      return const MaterialApp(
+      return MaterialApp(
         home: Scaffold(
-          body: Center(child: CircularProgressIndicator()),
+          body: const Center(child: PulsingRingsLoader(color: Colors.red)),
         ),
       );
     }
     return MaterialApp(
       title: 'Darasa Huru',
+      navigatorKey: navigatorKey,
       themeMode: _isDarkMode ? ThemeMode.dark : ThemeMode.light,
       theme: ThemeData(
         colorScheme: ColorScheme.fromSeed(seedColor: Colors.blueAccent),
         useMaterial3: true,
+        scaffoldBackgroundColor: Colors.transparent,
         appBarTheme: const AppBarTheme(
           backgroundColor: Colors.white,
           foregroundColor: Colors.black,
@@ -82,11 +133,37 @@ class _MyAppState extends State<MyApp> {
       darkTheme: ThemeData(
         colorScheme: ColorScheme.fromSeed(seedColor: Colors.blueAccent, brightness: Brightness.dark),
         useMaterial3: true,
+        scaffoldBackgroundColor: Colors.transparent,
         appBarTheme: const AppBarTheme(
           backgroundColor: Colors.black,
           foregroundColor: Colors.white,
         ),
       ),
+      builder: (context, child) {
+        return Stack(
+          children: [
+            // Base white to prevent black showing through transparent areas
+            Container(color: Colors.white),
+            // Background image with reduced visibility (lower on mobile)
+            Positioned.fill(
+              child: Opacity(
+                opacity: (kIsWeb ||
+                        defaultTargetPlatform == TargetPlatform.windows ||
+                        defaultTargetPlatform == TargetPlatform.linux ||
+                        defaultTargetPlatform == TargetPlatform.macOS)
+                    ? 0.06 // desktop/web (very subtle)
+                    : 0.02, // mobile (even more subtle)
+                child: Image.asset(
+                  'assets/icons-bg.png',
+                  fit: BoxFit.cover,
+                ),
+              ),
+            ),
+            // App content
+            if (child != null) child,
+          ],
+        );
+      },
       home: _showOnboarding
           ? OnboardingScreen(
               onFinished: () async {
@@ -416,26 +493,31 @@ class _SearchScreenState extends State<SearchScreen> {
   String _getPostTime(dynamic post) {
     try {
       final dateStr = post['date'];
-      if (dateStr is String && dateStr.isNotEmpty) {
-        final dt = DateTime.tryParse(dateStr);
-        if (dt != null) {
-          final now = DateTime.now();
-          final diff = now.difference(dt);
-          if (diff.inSeconds < 60) return '${diff.inSeconds} seconds ago';
-          if (diff.inMinutes < 60) return '${diff.inMinutes} minutes ago';
-          if (diff.inHours < 24) return '${diff.inHours} hours ago';
-          if (diff.inDays == 1) return 'Yesterday';
-          if (diff.inDays < 7) return '${diff.inDays} days ago';
-          final weeks = (diff.inDays / 7).floor();
-          if (weeks < 5) return '$weeks week${weeks > 1 ? 's' : ''} ago';
-          final months = (diff.inDays / 30).floor();
-          if (months < 12) return '$months month${months > 1 ? 's' : ''} ago';
-          final years = (diff.inDays / 365).floor();
-          return '$years year${years > 1 ? 's' : ''} ago';
-        }
+      final dateGmtStr = post['date_gmt'];
+
+      DateTime? dt;
+      if (dateGmtStr is String && dateGmtStr.isNotEmpty) {
+        dt = DateTime.tryParse(dateGmtStr)?.toLocal();
       }
-    } catch (_) {}
-    return '';
+      dt ??= (dateStr is String && dateStr.isNotEmpty) ? DateTime.tryParse(dateStr) : null;
+      if (dt == null) return '';
+
+      final now = DateTime.now();
+      final diff = now.difference(dt);
+      if (diff.inSeconds < 60) return '${diff.inSeconds} seconds ago';
+      if (diff.inMinutes < 60) return '${diff.inMinutes} minutes ago';
+      if (diff.inHours < 24) return '${diff.inHours} hours ago';
+      if (diff.inDays == 1) return 'Yesterday';
+      if (diff.inDays < 7) return '${diff.inDays} days ago';
+      final weeks = (diff.inDays / 7).floor();
+      if (weeks < 5) return '$weeks week${weeks > 1 ? 's' : ''} ago';
+      final months = (diff.inDays / 30).floor();
+      if (months < 12) return '$months month${months > 1 ? 's' : ''} ago';
+      final years = (diff.inDays / 365).floor();
+      return '$years year${years > 1 ? 's' : ''} ago';
+    } catch (_) {
+      return '';
+    }
   }
 
   String? _getFeaturedImage(dynamic post) {

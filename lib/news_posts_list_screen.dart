@@ -1,8 +1,10 @@
 import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
+import 'api/api_service.dart';
 import 'package:html_unescape/html_unescape.dart';
 import 'post_detail_screen.dart';
+import 'widgets/loading_indicator.dart';
 
 class NewsPostsListScreen extends StatefulWidget {
   final String title;
@@ -23,6 +25,7 @@ class _NewsPostsListScreenState extends State<NewsPostsListScreen> {
   bool _isLoadingMore = false;
   bool _hasMore = true;
   final ScrollController _scrollController = ScrollController();
+  int _requestId = 0;
 
   @override
   void initState() {
@@ -56,6 +59,7 @@ class _NewsPostsListScreenState extends State<NewsPostsListScreen> {
       _hasMore = true;
       _isLoadingMore = false;
     });
+    final int requestId = ++_requestId;
     try {
       int? catId = widget.categoryId;
       if (catId == null) {
@@ -63,12 +67,9 @@ class _NewsPostsListScreenState extends State<NewsPostsListScreen> {
         if (slug == 'all') {
           catId = 535;
         } else if (slug.isNotEmpty) {
-          final res = await http.get(Uri.parse('https://darasahuru.ac.tz/wp-json/wp/v2/categories?slug=$slug'));
-          if (res.statusCode == 200) {
-            final list = json.decode(res.body) as List<dynamic>;
-            if (list.isNotEmpty) {
-              catId = list[0]['id'] as int;
-            }
+          final list = await ApiService.getJson('https://darasahuru.ac.tz/wp-json/wp/v2/categories?slug=$slug') as List<dynamic>?;
+          if (list != null && list.isNotEmpty) {
+            catId = list[0]['id'] as int;
           }
         }
       }
@@ -81,15 +82,28 @@ class _NewsPostsListScreenState extends State<NewsPostsListScreen> {
         return;
       }
 
-      final first = await _fetchPosts(catId, page: 1);
-      if (first != null) {
+      final url = 'https://darasahuru.ac.tz/wp-json/wp/v2/posts?categories=$catId&per_page=100&page=1&_embed=1';
+      // 1) Try cached instantly
+      final cached = await ApiService.getJson(url) as List<dynamic>?;
+      if (cached != null && mounted && requestId == _requestId) {
         setState(() {
-          _posts = first;
+          _posts = cached;
           _isLoading = false;
-          _hasMore = first.length >= 30; // if fewer than per_page, no more pages
+          _hasMore = cached.length >= 100;
           _page = 1;
         });
-      } else {
+      }
+      // 2) Fetch fresh and update
+      final resp = await http.get(Uri.parse(url));
+      if (resp.statusCode == 200 && mounted && requestId == _requestId) {
+        final fresh = json.decode(resp.body) as List<dynamic>;
+        setState(() {
+          _posts = fresh;
+          _isLoading = false;
+          _hasMore = fresh.length >= 100;
+          _page = 1;
+        });
+      } else if (cached == null && mounted && requestId == _requestId) {
         setState(() {
           _error = 'Please turn on the internet and try again.';
           _isLoading = false;
@@ -104,12 +118,9 @@ class _NewsPostsListScreenState extends State<NewsPostsListScreen> {
   }
 
   Future<List<dynamic>?> _fetchPosts(int catId, {required int page}) async {
-    final url = 'https://darasahuru.ac.tz/wp-json/wp/v2/posts?categories=$catId&per_page=30&page=$page&_embed=1';
-    final res = await http.get(Uri.parse(url));
-    if (res.statusCode == 200) {
-      return json.decode(res.body) as List<dynamic>;
-    }
-    return null;
+    final url = 'https://darasahuru.ac.tz/wp-json/wp/v2/posts?categories=$catId&per_page=100&page=$page&_embed=1';
+    final data = await ApiService.getJson(url) as List<dynamic>?;
+    return data;
   }
 
   Future<void> _loadMore() async {
@@ -147,7 +158,7 @@ class _NewsPostsListScreenState extends State<NewsPostsListScreen> {
         setState(() {
           _posts.addAll(more);
           _page = nextPage;
-          _hasMore = more.length >= 30;
+          _hasMore = more.length >= 100;
           _isLoadingMore = false;
         });
       } else {
@@ -215,7 +226,7 @@ class _NewsPostsListScreenState extends State<NewsPostsListScreen> {
               child: Column(
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
-                  CircularProgressIndicator(),
+                  PulsingRingsLoader(color: Colors.red),
                   SizedBox(height: 16),
                   Text('Loading posts...'),
                 ],
@@ -234,11 +245,13 @@ class _NewsPostsListScreenState extends State<NewsPostsListScreen> {
                 )
               : _posts.isEmpty
                   ? const Center(child: Text('No posts found.'))
-                  : ListView.builder(
-                      controller: _scrollController,
-                      padding: const EdgeInsets.all(16.0),
-                      itemCount: _posts.length,
-                      itemBuilder: (context, index) {
+                  : RefreshIndicator(
+                      onRefresh: _load,
+                      child: ListView.builder(
+                        controller: _scrollController,
+                        padding: const EdgeInsets.all(16.0),
+                        itemCount: _posts.length,
+                        itemBuilder: (context, index) {
                         final post = _posts[index];
                         final title = HtmlUnescape().convert(_stripHtml(post['title']?['rendered'] ?? 'Post'));
                         final content = post['content']?['rendered'] ?? '';
@@ -266,7 +279,7 @@ class _NewsPostsListScreenState extends State<NewsPostsListScreen> {
                                           width: 64,
                                           height: 64,
                                           color: Colors.grey.shade200,
-                                          child: const Center(child: CircularProgressIndicator(strokeWidth: 2)),
+                                          child: const Center(child: PulsingRingsLoader(color: Colors.red, size: 24)),
                                         );
                                       },
                                       errorBuilder: (_, __, ___) => Container(
@@ -301,6 +314,7 @@ class _NewsPostsListScreenState extends State<NewsPostsListScreen> {
                                     title: title,
                                     htmlContent: content,
                                     categoryId: catId,
+                                    postUrl: (post['link'] is String) ? post['link'] as String : null,
                                   ),
                                 ),
                               );
@@ -309,6 +323,7 @@ class _NewsPostsListScreenState extends State<NewsPostsListScreen> {
                         );
                       },
                     ),
+                  ),
     );
   }
 }

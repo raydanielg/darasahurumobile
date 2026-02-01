@@ -7,7 +7,7 @@ class ApiService {
   // Simple cache for API responses
   static final Map<String, dynamic> _cache = {};
   static final Map<String, DateTime> _cacheTime = {};
-  static const Duration _ttl = Duration(minutes: 3);
+  static const Duration _ttl = Duration(minutes: 10);
 
   // Shared HTTP client
   static final http.Client _client = http.Client();
@@ -42,6 +42,11 @@ class ApiService {
     } catch (e) {
       return null;
     }
+  }
+
+  // Public helper to reuse cached GET requests app-wide
+  static Future<dynamic> getJson(String url, {bool useCache = true}) async {
+    return _getJson(url, useCache: useCache);
   }
 
   /// Fetch a page by slug with caching
@@ -79,14 +84,14 @@ class ApiService {
         } else {
           print('No subcategories found for ID: $id');
           // If no subcategories, fetch posts
-          final posts = await _getJson('$baseUrl/posts?categories=$id&per_page=30&_embed=1') as List<dynamic>?;
+          final posts = await _getJson('$baseUrl/posts?categories=$id&per_page=100&page=1&_embed=1') as List<dynamic>?;
           if (posts != null) {
             print('Parsed posts: ${posts.length} items');
             final result = {'type': 'posts', 'data': posts};
             _cache[cacheKey] = result;
             // Prefetch next page in background (warm cache)
             // ignore: unawaited_futures
-            _getJson('$baseUrl/posts?categories=$id&per_page=30&page=2&_embed=1');
+            _getJson('$baseUrl/posts?categories=$id&per_page=100&page=2&_embed=1');
             return result;
           } else {
             return {'type': 'error', 'message': 'Failed to load posts'};

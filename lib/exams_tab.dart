@@ -1,8 +1,11 @@
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
+import 'dart:async';
 import 'post_detail_screen.dart';
 import 'api/api_service.dart';
+import 'widgets/loading_indicator.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 class ExamsTab extends StatefulWidget {
   const ExamsTab({super.key});
@@ -65,7 +68,58 @@ class _ExamsTabState extends State<ExamsTab> {
   void initState() {
     super.initState();
     _selectedSubcategory = null; // Start with cards view
-    _fetchExamsPosts();
+    _initLoad();
+  }
+
+  Future<void> _initLoad() async {
+    // Try cached root subcategories first
+    final hadCache = await _loadCachedRootSubcategories();
+    if (!hadCache) {
+      // No cache: show loader until first network completes
+      await _fetchExamsPosts();
+    } else {
+      // Has cache: refresh silently in background
+      unawaited(_refreshRootSubcategories());
+    }
+  }
+
+  Future<bool> _loadCachedRootSubcategories() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final cached = prefs.getString('exams_root_subcats');
+      if (cached != null) {
+        final data = json.decode(cached);
+        if (mounted) {
+          setState(() {
+            _subcategories = (data is List) ? data : [];
+            _isLoading = false;
+            _error = null;
+          });
+        }
+        return true;
+      }
+    } catch (_) {}
+    return false;
+  }
+
+  Future<void> _refreshRootSubcategories() async {
+    try {
+      final subcategoriesResponse = await http.get(
+        Uri.parse('https://darasahuru.ac.tz/wp-json/wp/v2/categories?parent=535&per_page=100'),
+      );
+      if (!mounted) return;
+      if (subcategoriesResponse.statusCode == 200) {
+        final decoded = json.decode(subcategoriesResponse.body);
+        setState(() {
+          _subcategories = (decoded is List) ? decoded : [];
+          _error = null;
+        });
+        try {
+          final prefs = await SharedPreferences.getInstance();
+          await prefs.setString('exams_root_subcats', json.encode(_subcategories));
+        } catch (_) {}
+      }
+    } catch (_) {}
   }
 
   Future<void> _fetchExamsPosts() async {
@@ -84,6 +138,10 @@ class _ExamsTabState extends State<ExamsTab> {
           _subcategories = json.decode(subcategoriesResponse.body);
           _isLoading = false;
         });
+        try {
+          final prefs = await SharedPreferences.getInstance();
+          await prefs.setString('exams_root_subcats', json.encode(_subcategories));
+        } catch (_) {}
       } else {
         setState(() {
           _error = 'Please turn on the internet and try again.';
@@ -96,6 +154,48 @@ class _ExamsTabState extends State<ExamsTab> {
         _isLoading = false;
       });
     }
+  }
+
+  Future<Map<String, dynamic>?> _readCachedCategory(int id) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final raw = prefs.getString('exams_cat_'+id.toString());
+      if (raw == null) return null;
+      final decoded = json.decode(raw);
+      if (decoded is Map<String, dynamic>) return decoded;
+    } catch (_) {}
+    return null;
+  }
+
+  Future<void> _saveCachedCategory(int id, Map<String, dynamic> value) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString('exams_cat_'+id.toString(), json.encode(value));
+    } catch (_) {}
+  }
+
+  void _applyCategoryResult(Map<String, dynamic> result, int id) {
+    if (result['type'] == 'subcats') {
+      _subcategories = result['data'] ?? [];
+      _posts = [];
+      _selectedSubcategory = null; // deeper subcategories
+    } else if (result['type'] == 'posts') {
+      _selectedSubcategory = id.toString();
+      _posts = result['data'] ?? [];
+    } else {
+      _error = result['message'] ?? 'Failed to load data. Please try again.';
+    }
+  }
+
+  Future<void> _refreshCategoryInBackground(int id) async {
+    try {
+      final result = await ApiService.loadCategoryForUI(id);
+      if (!mounted) return;
+      setState(() {
+        _applyCategoryResult(result, id);
+      });
+      await _saveCachedCategory(id, {'type': result['type'], 'data': result['data']});
+    } catch (_) {}
   }
 
   Widget _buildSubcategoryCards() {
@@ -111,7 +211,7 @@ class _ExamsTabState extends State<ExamsTab> {
                 child: Column(
                   mainAxisAlignment: MainAxisAlignment.center,
                   children: [
-                    CircularProgressIndicator(),
+                    PulsingRingsLoader(color: Colors.red),
                     SizedBox(height: 16),
                     Text('Loading categories...'),
                   ],
@@ -162,36 +262,41 @@ class _ExamsTabState extends State<ExamsTab> {
                     ),
                     child: InkWell(
                       onTap: () async {
+                        _error = null;
+                        // Push current level to stack before moving deeper
+                        setState(() {
+                          _subcatStack.add(List<dynamic>.from(_subcategories));
+                        });
+
+                        // Try cached first
+                        final cached = await _readCachedCategory(id);
+                        if (mounted && cached != null) {
+                          setState(() {
+                            _applyCategoryResult(cached, id);
+                          });
+                          // Refresh silently in background
+                          unawaited(_refreshCategoryInBackground(id));
+                          return;
+                        }
+
+                        // No cache: show tap loader and fetch
                         setState(() {
                           _isTapping = true;
-                          _error = null;
                         });
                         try {
                           final result = await ApiService.loadCategoryForUI(id);
-                          if (mounted) {
-                            setState(() {
-                              _isTapping = false;
-                              // Push current subcategories level to stack before moving deeper
-                              _subcatStack.add(List<dynamic>.from(_subcategories));
-                              if (result['type'] == 'subcats') {
-                                _subcategories = result['data'];
-                                _posts = [];
-                                _selectedSubcategory = null; // New level: show deeper subcategories
-                              } else if (result['type'] == 'posts') {
-                                _selectedSubcategory = id.toString();
-                                _posts = result['data'];
-                              } else {
-                                _error = result['message'] ?? 'Failed to load data. Please try again.';
-                              }
-                            });
-                          }
-                        } catch (e) {
-                          if (mounted) {
-                            setState(() {
-                              _isTapping = false;
-                              _error = 'Please turn on the internet and try again.';
-                            });
-                          }
+                          if (!mounted) return;
+                          setState(() {
+                            _isTapping = false;
+                            _applyCategoryResult(result, id);
+                          });
+                          await _saveCachedCategory(id, {'type': result['type'], 'data': result['data']});
+                        } catch (_) {
+                          if (!mounted) return;
+                          setState(() {
+                            _isTapping = false;
+                            _error = 'Please turn on the internet and try again.';
+                          });
                         }
                       },
                       child: Container(
@@ -283,7 +388,7 @@ class _ExamsTabState extends State<ExamsTab> {
                           child: Column(
                             mainAxisAlignment: MainAxisAlignment.center,
                             children: [
-                              CircularProgressIndicator(),
+                              PulsingRingsLoader(color: Colors.red),
                               SizedBox(height: 16),
                               Text('Loading posts...'),
                             ],
@@ -351,7 +456,7 @@ class _ExamsTabState extends State<ExamsTab> {
                                                       width: 64,
                                                       height: 64,
                                                       color: Colors.grey.shade200,
-                                                      child: const Center(child: CircularProgressIndicator(strokeWidth: 2)),
+                                                      child: const Center(child: PulsingRingsLoader(color: Colors.red, size: 24)),
                                                     );
                                                   },
                                                   errorBuilder: (_, __, ___) => Container(

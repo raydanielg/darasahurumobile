@@ -2,8 +2,10 @@ import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
 import 'post_detail_screen.dart';
+import 'api/api_service.dart';
 import 'package:html_unescape/html_unescape.dart';
 import 'package:flutter_typeahead/flutter_typeahead.dart';
+import 'widgets/loading_indicator.dart';
 
 class HomeTab extends StatefulWidget {
   const HomeTab({super.key});
@@ -17,15 +19,16 @@ class _HomeTabState extends State<HomeTab> {
   List<dynamic> _subcategories = [];
   bool _isLoading = true;
   bool _isLoadingMore = false;
-  static const int _perPage = 100;
+  static const int _perPage = 20;
   int _totalPages = 1;
   bool _hasMore = true;
-  bool _autoLoadAll = true; // auto fetch all pages
+  bool _autoLoadAll = false; // do not auto fetch all pages, load as user scrolls
   String? _error;
   String? _selectedCategory; // Selected category slug
   Map<String, int> _categoryCache = {}; // Cache slug to ID
   int _currentPage = 1;
   ScrollController _scrollController = ScrollController();
+  int _requestId = 0; // guard to avoid stale updates
 
   final List<Map<String, String>> _categories = const [
     {'title': 'All', 'slug': 'all'},
@@ -110,41 +113,48 @@ class _HomeTabState extends State<HomeTab> {
     super.dispose();
   }
 
+  Future<void> _onRefresh() async {
+    ApiService.clearCache();
+    _categoryCache.clear();
+    _hasMore = true;
+    _currentPage = 1;
+    await _fetchPosts();
+  }
+
   Future<void> _fetchPosts() async {
     setState(() {
-      _isLoading = true;
       _error = null;
       _currentPage = 1;
+      _posts = [];
+      _isLoading = true;
     });
-
-    // Fetch categories if not cached for accurate ID mapping
-    await _fetchCategories();
+    final int requestId = ++_requestId;
 
     try {
       String url = 'https://darasahuru.ac.tz/wp-json/wp/v2/posts?per_page='+_perPage.toString()+'&_embed=1&page=1';
       if (_selectedCategory != null && _selectedCategory != 'all') {
         if (_selectedCategory == 'a-level') {
-          // Use combined categories 35,36,37,38 with per_page=100
-          url = 'https://darasahuru.ac.tz/wp-json/wp/v2/posts?categories=35,36,37,38&per_page=100&_embed=1&page=1';
+          // Use combined categories 504,34,506,534 with per_page=_perPage
+          url = 'https://darasahuru.ac.tz/wp-json/wp/v2/posts?categories=504,34,506,534&per_page='+_perPage.toString()+'&_embed=1&page=1';
         } else if (_selectedCategory == 'o-level') {
-          // Use specific API for O level
-          url = 'https://darasahuru.ac.tz/wp-json/wp/v2/posts?categories=28&per_page=100&_embed=1&page=1';
+          // O Level: combine Form I–IV study notes (12,47,48,24)
+          url = 'https://darasahuru.ac.tz/wp-json/wp/v2/posts?categories=12,47,48,24&per_page='+_perPage.toString()+'&_embed=1&page=1';
         } else if (_selectedCategory == 'primary') {
-          // Use combined Primary categories with per_page=100
-          url = 'https://darasahuru.ac.tz/wp-json/wp/v2/posts?categories=181,182,210,211,54,212,95,213,214&per_page=100&_embed=1&page=1';
+          // Use combined Primary categories with per_page=_perPage
+          url = 'https://darasahuru.ac.tz/wp-json/wp/v2/posts?categories=181,182,210,211,54,212,95,213,214&per_page='+_perPage.toString()+'&_embed=1&page=1';
         } else if (_selectedCategory == 'necta-info') {
           // Use specific API for Necta Info with multiple categories
-          url = 'https://darasahuru.ac.tz/wp-json/wp/v2/posts?categories=122,55,102,5,73,30,9,51&per_page=100&_embed=1&page=1';
+          url = 'https://darasahuru.ac.tz/wp-json/wp/v2/posts?categories=122,55,102,5,73,30,9,51&per_page='+_perPage.toString()+'&_embed=1&page=1';
         } else if (_selectedCategory == 'universities-colleges') {
           // Use specific API for Un & Colleges with multiple categories
-          url = 'https://darasahuru.ac.tz/wp-json/wp/v2/posts?categories=57,58,178,66,179,479,466,65,475,97&per_page=100&_embed=1&page=1';
+          url = 'https://darasahuru.ac.tz/wp-json/wp/v2/posts?categories=57,58,178,66,179,479,466,65,475,97&per_page='+_perPage.toString()+'&_embed=1&page=1';
         } else if (_selectedCategory == 'tamisemi') {
-          // Tamisemi: per_page=100 and page=1
-          url = 'https://darasahuru.ac.tz/wp-json/wp/v2/posts?categories=43&per_page=100&_embed=1&page=1';
+          // Tamisemi: per_page=_perPage and page=1
+          url = 'https://darasahuru.ac.tz/wp-json/wp/v2/posts?categories=43&per_page='+_perPage.toString()+'&_embed=1&page=1';
         } else {
           final categoryId = _getCategoryId(_selectedCategory!);
           if (categoryId != null) {
-            url = 'https://darasahuru.ac.tz/wp-json/wp/v2/posts?categories=$categoryId&per_page=100&_embed=1&page=1';
+            url = 'https://darasahuru.ac.tz/wp-json/wp/v2/posts?categories=$categoryId&per_page='+_perPage.toString()+'&_embed=1&page=1';
           } else {
             // Fallback: show error if category not found
             setState(() {
@@ -156,44 +166,58 @@ class _HomeTabState extends State<HomeTab> {
         }
       }
 
+      // Try cached first for instant UI (per-category URL). Guard with requestId.
+      try {
+        final cached = await ApiService.getJson(url) as List<dynamic>?;
+        if (cached != null && mounted && requestId == _requestId) {
+          setState(() {
+            _posts = cached;
+            _isLoading = false; // show instantly
+            _hasMore = true; // optimistic until headers arrive
+          });
+        }
+      } catch (_) {}
+
+      // Then fetch fresh with headers to get accurate pagination. Guard with requestId.
       final response = await http.get(Uri.parse(url));
-      if (response.statusCode == 200) {
+      if (response.statusCode == 200 && mounted && requestId == _requestId) {
+        final fresh = json.decode(response.body) as List<dynamic>;
         setState(() {
-          _posts = json.decode(response.body);
+          _posts = fresh;
           _isLoading = false;
           _totalPages = int.tryParse(response.headers['x-wp-totalpages'] ?? '1') ?? 1;
           _hasMore = _currentPage < _totalPages;
         });
         if (_autoLoadAll && _hasMore) {
-          // Continue loading remaining pages in the background
           WidgetsBinding.instance.addPostFrameCallback((_) {
-            if (mounted) {
+            if (mounted && requestId == _requestId) {
               _loadAllPosts();
             }
           });
         }
       } else {
+        if (mounted && requestId == _requestId) {
+          setState(() {
+            _error = 'Please turn on the internet and try again.';
+            _isLoading = false;
+          });
+        }
+      }
+    } catch (e) {
+      if (mounted && requestId == _requestId) {
         setState(() {
           _error = 'Please turn on the internet and try again.';
           _isLoading = false;
         });
       }
-    } catch (e) {
-      setState(() {
-        _error = 'Please turn on the internet and try again.';
-        _isLoading = false;
-      });
     }
   }
 
   Future<void> _fetchCategories() async {
     if (_categoryCache.isNotEmpty) return; // Already cached
     try {
-      final response = await http.get(
-        Uri.parse('https://darasahuru.ac.tz/wp-json/wp/v2/categories?per_page=100'),
-      );
-      if (response.statusCode == 200) {
-        final categories = json.decode(response.body) as List;
+      final categories = await ApiService.getJson('https://darasahuru.ac.tz/wp-json/wp/v2/categories?per_page=100') as List<dynamic>?;
+      if (categories != null) {
         for (var cat in categories) {
           final slug = cat['slug'];
           final id = cat['id'];
@@ -224,23 +248,24 @@ class _HomeTabState extends State<HomeTab> {
       // Build URL based on selected category and next page
       String url;
       if (_selectedCategory == null || _selectedCategory == 'all') {
-        url = 'https://darasahuru.ac.tz/wp-json/wp/v2/posts?per_page=100&_embed=1&page='+_currentPage.toString();
+        url = 'https://darasahuru.ac.tz/wp-json/wp/v2/posts?per_page='+_perPage.toString()+'&_embed=1&page='+_currentPage.toString();
       } else if (_selectedCategory == 'a-level') {
-        // Use combined categories 35,36,37,38 with per_page=100 for pagination too
-        url = 'https://darasahuru.ac.tz/wp-json/wp/v2/posts?categories=35,36,37,38&per_page=100&_embed=1&page='+_currentPage.toString();
+        // Use combined categories 504,34,506,534 with per_page=_perPage for pagination too
+        url = 'https://darasahuru.ac.tz/wp-json/wp/v2/posts?categories=504,34,506,534&per_page='+_perPage.toString()+'&_embed=1&page='+_currentPage.toString();
       } else if (_selectedCategory == 'o-level') {
-        url = 'https://darasahuru.ac.tz/wp-json/wp/v2/posts?categories=28&per_page=100&_embed=1&page='+_currentPage.toString();
+        // O Level pagination: same combined categories 12,47,48,24
+        url = 'https://darasahuru.ac.tz/wp-json/wp/v2/posts?categories=12,47,48,24&per_page='+_perPage.toString()+'&_embed=1&page='+_currentPage.toString();
       } else if (_selectedCategory == 'primary') {
-        url = 'https://darasahuru.ac.tz/wp-json/wp/v2/posts?categories=181,182,210,211,54,212,95,213,214&per_page=100&_embed=1&page='+_currentPage.toString();
+        url = 'https://darasahuru.ac.tz/wp-json/wp/v2/posts?categories=181,182,210,211,54,212,95,213,214&per_page='+_perPage.toString()+'&_embed=1&page='+_currentPage.toString();
       } else if (_selectedCategory == 'necta-info') {
-        url = 'https://darasahuru.ac.tz/wp-json/wp/v2/posts?categories=122,55,102,5,73,30,9,51&per_page=100&_embed=1&page='+_currentPage.toString();
+        url = 'https://darasahuru.ac.tz/wp-json/wp/v2/posts?categories=122,55,102,5,73,30,9,51&per_page='+_perPage.toString()+'&_embed=1&page='+_currentPage.toString();
       } else if (_selectedCategory == 'universities-colleges') {
-        url = 'https://darasahuru.ac.tz/wp-json/wp/v2/posts?categories=57,58,178,66,179,479,466,65,475,97&per_page=100&_embed=1&page='+_currentPage.toString();
+        url = 'https://darasahuru.ac.tz/wp-json/wp/v2/posts?categories=57,58,178,66,179,479,466,65,475,97&per_page='+_perPage.toString()+'&_embed=1&page='+_currentPage.toString();
       } else if (_selectedCategory == 'tamisemi') {
-        url = 'https://darasahuru.ac.tz/wp-json/wp/v2/posts?categories=43&per_page=100&_embed=1&page='+_currentPage.toString();
+        url = 'https://darasahuru.ac.tz/wp-json/wp/v2/posts?categories=43&per_page='+_perPage.toString()+'&_embed=1&page='+_currentPage.toString();
       } else {
         final categoryId = _getCategoryId(_selectedCategory!);
-        url = 'https://darasahuru.ac.tz/wp-json/wp/v2/posts?categories=$categoryId&per_page=100&_embed=1&page='+_currentPage.toString();
+        url = 'https://darasahuru.ac.tz/wp-json/wp/v2/posts?categories=$categoryId&per_page='+_perPage.toString()+'&_embed=1&page='+_currentPage.toString();
       }
 
       final response = await http.get(Uri.parse(url));
@@ -333,119 +358,122 @@ class _HomeTabState extends State<HomeTab> {
         children: [
           _buildCategoryMenu(),
           Expanded(
-            child: _isLoading
-                ? const Center(
-                    child: Column(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        CircularProgressIndicator(),
-                        SizedBox(height: 16),
-                        Text('Loading posts...'),
-                      ],
-                    ),
-                  )
-                : _error != null
-                    ? Center(
-                        child: Column(
-                          mainAxisAlignment: MainAxisAlignment.center,
-                          children: [
-                            Text(_error!),
-                            const SizedBox(height: 16),
-                            ElevatedButton(
-                              onPressed: _fetchPosts,
-                              child: const Text('Retry'),
-                            ),
-                          ],
-                        ),
-                      )
-                    : _posts.isEmpty
-                        ? const Center(child: Text('No posts found.'))
-                        : ListView.builder(
-                            controller: _scrollController,
-                            padding: const EdgeInsets.all(16.0),
-                            itemCount: _posts.length + (_isLoadingMore ? 1 : 0),
-                            itemBuilder: (context, index) {
-                              if (_isLoadingMore && index == _posts.length) {
-                                return const Padding(
-                                  padding: EdgeInsets.symmetric(vertical: 16),
-                                  child: Center(child: CircularProgressIndicator(strokeWidth: 2)),
-                                );
-                              }
+            child: RefreshIndicator(
+              onRefresh: _onRefresh,
+              child: _isLoading
+                  ? const Center(
+                      child: Column(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          PulsingRingsLoader(color: Colors.red),
+                          SizedBox(height: 16),
+                          Text('Loading posts...'),
+                        ],
+                      ),
+                    )
+                  : _error != null
+                      ? Center(
+                          child: Column(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              Text(_error!),
+                              const SizedBox(height: 16),
+                              ElevatedButton(
+                                onPressed: _fetchPosts,
+                                child: const Text('Retry'),
+                              ),
+                            ],
+                          ),
+                        )
+                      : _posts.isEmpty
+                          ? const Center(child: Text('No posts found.'))
+                          : ListView.builder(
+                              controller: _scrollController,
+                              padding: const EdgeInsets.all(16.0),
+                              itemCount: _posts.length + (_isLoadingMore ? 1 : 0),
+                              itemBuilder: (context, index) {
+                                if (_isLoadingMore && index == _posts.length) {
+                                  return const Padding(
+                                    padding: EdgeInsets.symmetric(vertical: 16),
+                                    child: Center(child: PulsingRingsLoader(color: Colors.red, size: 28)),
+                                  );
+                                }
 
-                              final post = _posts[index];
-                              final title = HtmlUnescape().convert(_stripHtml(post['title']?['rendered'] ?? 'Post'));
-                              final content = post['content']?['rendered'] ?? '';
-                              final imgUrl = _featuredImage(post);
-                              final time = _timeAgo(post['date'], post['date_gmt']);
-                              return Card(
-                                elevation: 0, // Flat design, no shadow
-                                margin: const EdgeInsets.symmetric(vertical: 8),
-                                shape: RoundedRectangleBorder(
-                                  borderRadius: BorderRadius.circular(8),
-                                  side: BorderSide(color: Colors.grey.shade300, width: 1),
-                                ),
-                                child: ListTile(
-                                  leading: ClipRRect(
+                                final post = _posts[index];
+                                final title = HtmlUnescape().convert(_stripHtml(post['title']?['rendered'] ?? 'Post'));
+                                final content = post['content']?['rendered'] ?? '';
+                                final imgUrl = _featuredImage(post);
+                                final time = _timeAgo(post['date'], post['date_gmt']);
+                                return Card(
+                                  elevation: 0, // Flat design, no shadow
+                                  margin: const EdgeInsets.symmetric(vertical: 8),
+                                  shape: RoundedRectangleBorder(
                                     borderRadius: BorderRadius.circular(8),
-                                    child: imgUrl != null
-                                        ? Image.network(
-                                            imgUrl,
-                                            width: 64,
-                                            height: 64,
-                                            fit: BoxFit.cover,
-                                            loadingBuilder: (context, child, loadingProgress) {
-                                              if (loadingProgress == null) return child;
-                                              return Container(
+                                    side: BorderSide(color: Colors.grey.shade300, width: 1),
+                                  ),
+                                  child: ListTile(
+                                    leading: ClipRRect(
+                                      borderRadius: BorderRadius.circular(8),
+                                      child: imgUrl != null
+                                          ? Image.network(
+                                              imgUrl,
+                                              width: 64,
+                                              height: 64,
+                                              fit: BoxFit.cover,
+                                              loadingBuilder: (context, child, loadingProgress) {
+                                                if (loadingProgress == null) return child;
+                                                return Container(
+                                                  width: 64,
+                                                  height: 64,
+                                                  color: Colors.grey.shade200,
+                                                  child: const Center(child: PulsingRingsLoader(color: Colors.red, size: 24)),
+                                                );
+                                              },
+                                              errorBuilder: (_, __, ___) => Container(
                                                 width: 64,
                                                 height: 64,
                                                 color: Colors.grey.shade200,
-                                                child: const Center(child: CircularProgressIndicator(strokeWidth: 2)),
-                                              );
-                                            },
-                                            errorBuilder: (_, __, ___) => Container(
+                                                child: const Icon(Icons.image_not_supported, color: Colors.grey),
+                                              ),
+                                            )
+                                          : Container(
                                               width: 64,
                                               height: 64,
                                               color: Colors.grey.shade200,
-                                              child: const Icon(Icons.image_not_supported, color: Colors.grey),
+                                              child: const Icon(Icons.image, color: Colors.grey),
                                             ),
-                                          )
-                                        : Container(
-                                            width: 64,
-                                            height: 64,
-                                            color: Colors.grey.shade200,
-                                            child: const Icon(Icons.image, color: Colors.grey),
+                                    ),
+                                    title: Text(
+                                      title.isEmpty ? 'Post' : title,
+                                      maxLines: 2,
+                                      overflow: TextOverflow.ellipsis,
+                                      style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+                                    ),
+                                    subtitle: time.isNotEmpty
+                                        ? Text(time, style: const TextStyle(fontSize: 12, color: Colors.grey))
+                                        : null,
+                                    trailing: null,
+                                    onTap: () {
+                                      final catId = (post['categories'] is List && (post['categories'] as List).isNotEmpty)
+                                          ? (post['categories'][0] as int)
+                                          : null;
+                                      Navigator.push(
+                                        context,
+                                        MaterialPageRoute(
+                                          builder: (_) => PostDetailScreen(
+                                            title: title,
+                                            htmlContent: content,
+                                            categoryId: catId,
+                                            postUrl: (post['link'] is String) ? post['link'] as String : null,
                                           ),
-                                  ),
-                                  title: Text(
-                                    title.isEmpty ? 'Post' : title,
-                                    maxLines: 2,
-                                    overflow: TextOverflow.ellipsis,
-                                    style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
-                                  ),
-                                  subtitle: time.isNotEmpty
-                                      ? Text(time, style: const TextStyle(fontSize: 12, color: Colors.grey))
-                                      : null,
-                                  trailing: null,
-                                  onTap: () {
-                                    final catId = (post['categories'] is List && (post['categories'] as List).isNotEmpty)
-                                        ? (post['categories'][0] as int)
-                                        : null;
-                                    Navigator.push(
-                                      context,
-                                      MaterialPageRoute(
-                                        builder: (_) => PostDetailScreen(
-                                          title: title,
-                                          htmlContent: content,
-                                          categoryId: catId,
-                                          postUrl: (post['link'] is String) ? post['link'] as String : null,
                                         ),
-                                      ),
-                                    );
-                                  },
-                                ),
-                              );
-                            },
-                          ),
+                                      );
+                                    },
+                                  ),
+                                );
+                              },
+                            ),
+            ),
           ),
         ],
       ),

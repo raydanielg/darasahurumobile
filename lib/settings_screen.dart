@@ -140,8 +140,8 @@ class SettingsScreen extends StatelessWidget {
             context,
             icon: Icons.email_outlined,
             title: 'Email',
-            subtitle: 'darasahuru@gmail.com',
-            onTap: () => _sendEmail(context, 'darasahuru@gmail.com'),
+            subtitle: 'info@darasahuru.ac.tz',
+            onTap: () => _sendEmail(context, 'info@darasahuru.ac.tz'),
           ),
 
           const SizedBox(height: 24),

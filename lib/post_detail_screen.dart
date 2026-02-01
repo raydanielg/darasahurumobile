@@ -9,6 +9,8 @@ import 'package:webview_flutter/webview_flutter.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:html_unescape/html_unescape.dart';
+import 'widgets/loading_indicator.dart';
+import 'news_posts_list_screen.dart';
 
 class PostDetailScreen extends StatefulWidget {
   final String title;
@@ -116,6 +118,10 @@ class _PostDetailScreenState extends State<PostDetailScreen> {
       setState(() {
         _isLoadingRecommendations = false;
       });
+      // Ensure WebView reflects state (no related)
+      if (_useWebView) {
+        try { _webViewController.loadHtmlString(_prepareHtmlForWebView(widget.htmlContent)); } catch (_) {}
+      }
       return;
     }
 
@@ -128,15 +134,24 @@ class _PostDetailScreenState extends State<PostDetailScreen> {
           _recommendedPosts = json.decode(response.body);
           _isLoadingRecommendations = false;
         });
+        if (_useWebView) {
+          try { _webViewController.loadHtmlString(_prepareHtmlForWebView(widget.htmlContent)); } catch (_) {}
+        }
       } else {
         setState(() {
           _isLoadingRecommendations = false;
         });
+        if (_useWebView) {
+          try { _webViewController.loadHtmlString(_prepareHtmlForWebView(widget.htmlContent)); } catch (_) {}
+        }
       }
     } catch (e) {
       setState(() {
         _isLoadingRecommendations = false;
       });
+      if (_useWebView) {
+        try { _webViewController.loadHtmlString(_prepareHtmlForWebView(widget.htmlContent)); } catch (_) {}
+      }
     }
   }
 
@@ -144,6 +159,7 @@ class _PostDetailScreenState extends State<PostDetailScreen> {
     final htmlContent = _prepareHtmlForWebView(widget.htmlContent);
     final webViewController = WebViewController()
       ..setJavaScriptMode(JavaScriptMode.unrestricted)
+      ..setBackgroundColor(const Color(0x00000000))
       ..setNavigationDelegate(
         NavigationDelegate(
           onPageStarted: (String url) {
@@ -158,10 +174,23 @@ class _PostDetailScreenState extends State<PostDetailScreen> {
             });
           },
           onWebResourceError: (WebResourceError error) {
-            setState(() {
-              _isWebViewLoading = false;
-              _webViewError = 'Failed to load content: ${error.description}';
-            });
+            final isMainFrame = error.isForMainFrame ?? true;
+            if (isMainFrame) {
+              final desc = error.description.toLowerCase();
+              String message;
+              if (desc.contains('err_socket_not_connected') ||
+                  desc.contains('err_internet_disconnected') ||
+                  desc.contains('err_name_not_resolved') ||
+                  desc.contains('host lookup')) {
+                message = 'Please turn on the internet and try again.';
+              } else {
+                message = 'Failed to load content.';
+              }
+              setState(() {
+                _isWebViewLoading = false;
+                _webViewError = message;
+              });
+            }
           },
           onNavigationRequest: (NavigationRequest request) {
             final uri = Uri.tryParse(request.url);
@@ -183,13 +212,35 @@ class _PostDetailScreenState extends State<PostDetailScreen> {
     return webViewController;
   }
 
+  Widget _wrapWithBackground(Widget child) {
+    return Stack(
+      fit: StackFit.expand,
+      children: [
+        const DecoratedBox(
+          decoration: BoxDecoration(
+            image: DecorationImage(
+              image: AssetImage('assets/bgone.jpg'),
+              fit: BoxFit.cover,
+            ),
+          ),
+        ),
+        DecoratedBox(
+          decoration: BoxDecoration(
+            color: Colors.white.withOpacity(0.72),
+          ),
+        ),
+        Positioned.fill(child: child),
+      ],
+    );
+  }
+
   Widget _buildWebViewContent() {
     return _isWebViewLoading
       ? const Center(
           child: Column(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              CircularProgressIndicator(),
+              PulsingRingsLoader(color: Colors.red),
               SizedBox(height: 16),
               Text('Loading content...'),
             ],
@@ -243,6 +294,9 @@ class _PostDetailScreenState extends State<PostDetailScreen> {
           margin: Margins.only(top: 16.0, bottom: 8.0),
           fontWeight: FontWeight.bold,
         ),
+        'h1': Style(color: Colors.red.shade700),
+        'h2': Style(color: Colors.blue.shade700),
+        'h3': Style(color: Colors.green.shade700),
         'p': Style(
           margin: Margins.only(bottom: 12.0),
         ),
@@ -365,6 +419,7 @@ class _PostDetailScreenState extends State<PostDetailScreen> {
 
   String _prepareHtmlForWebView(String html) {
     final transformed = _transformMediaEmbeds(html);
+    final relatedSection = _buildRelatedHtml();
     return '''
       <!DOCTYPE html>
       <html>
@@ -379,12 +434,16 @@ class _PostDetailScreenState extends State<PostDetailScreen> {
             padding: 16px;
             margin: 0;
             font-size: calc(16px * var(--dh-scale));
+            background: transparent;
           }
           h1, h2, h3, h4, h5, h6 {
             margin-top: 24px;
             margin-bottom: 12px;
             font-weight: 600;
           }
+          h1 { color: #c62828; }
+          h2 { color: #1565c0; }
+          h3 { color: #2e7d32; }
           p {
             margin-bottom: 16px;
           }
@@ -411,15 +470,56 @@ class _PostDetailScreenState extends State<PostDetailScreen> {
           .content-wrapper {
             max-width: 100%;
           }
+          .related { margin-top: 16px; }
+          .related h2 { margin: 0 0 8px 0; font-size: 1em; }
+          .rel-card { display: flex; gap: 8px; align-items: center; padding: 8px; border: 1px solid #eee; border-radius: 8px; text-decoration: none; color: inherit; margin-bottom: 8px; }
+          .rel-card:hover { background: #fafafa; }
+          .rel-card img { width: 56px; height: 56px; object-fit: cover; border-radius: 8px; flex-shrink: 0; }
+          .rel-card .rel-title { font-weight: 600; font-size: .95em; }
+          .rel-card .rel-time { color: #888; font-size: .85em; margin-top: 2px; }
         </style>
       </head>
       <body>
         <div class="content-wrapper">
           ${transformed}
+          ${relatedSection}
         </div>
       </body>
       </html>
     ''';
+  }
+
+  String _buildRelatedHtml() {
+    try {
+      if (_recommendedPosts.isEmpty) return '';
+      final buf = StringBuffer();
+      buf.writeln('<div class="related">');
+      buf.writeln('<h2>Related Posts</h2>');
+      final limit = _recommendedPosts.length < 4 ? _recommendedPosts.length : 4;
+      for (int i = 0; i < limit; i++) {
+        final post = _recommendedPosts[i];
+        final rawTitle = post['title']?['rendered'] ?? 'Post';
+        final title = HtmlUnescape().convert(rawTitle);
+        final link = (post['link'] is String) ? post['link'] as String : '#';
+        final img = _getFeaturedImage(post);
+        final time = _getPostTime(post);
+        final imgTag = (img != null && img.isNotEmpty) ? '<img src="$img" alt="" />' : '';
+        buf.writeln('<a class="rel-card" href="$link">$imgTag<div><div class="rel-title">${_escapeHtml(title)}</div>${time.isNotEmpty ? '<div class="rel-time">${_escapeHtml(time)}</div>' : ''}</div></a>');
+      }
+      buf.writeln('</div>');
+      return buf.toString();
+    } catch (_) {
+      return '';
+    }
+  }
+
+  String _escapeHtml(String s) {
+    return s
+        .replaceAll('&', '&amp;')
+        .replaceAll('<', '&lt;')
+        .replaceAll('>', '&gt;')
+        .replaceAll('"', '&quot;')
+        .replaceAll("'", '&#39;');
   }
 
   void _reloadWebView() {
@@ -487,13 +587,26 @@ class _PostDetailScreenState extends State<PostDetailScreen> {
     try {
       Uri uri = Uri.parse(url);
       if (uri.host.contains('darasahuru.ac.tz')) {
+        // Check if it's a category link
+        if (_isCategoryLink(uri)) {
+          final categorySlug = _extractCategorySlugFromUri(uri);
+          if (categorySlug.isNotEmpty) {
+            await _openCategoryBySlug(categorySlug);
+            return;
+          }
+        }
+        
+        // Check if it's a post with ID
         final p = uri.queryParameters['p'];
         if (p != null) {
           final id = int.tryParse(p);
           if (id != null) {
             await _openInternalPostById(id);
+            return;
           }
         }
+        
+        // Try to open as post by slug
         final slug = _extractSlugFromUri(uri);
         if (slug.isNotEmpty) {
           await _openInternalPostBySlug(slug);
@@ -554,6 +667,69 @@ class _PostDetailScreenState extends State<PostDetailScreen> {
     }
   }
 
+  bool _isCategoryLink(Uri uri) {
+    try {
+      if (uri.host.contains('darasahuru.ac.tz')) {
+        final path = uri.path.toLowerCase();
+        return path.contains('/category/');
+      }
+      return false;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  String _extractCategorySlugFromUri(Uri uri) {
+    try {
+      final segments = uri.pathSegments.where((s) => s.isNotEmpty).toList();
+      if (segments.isEmpty) return '';
+      
+      // Find the index of 'category' in the segments
+      final catIndex = segments.indexOf('category');
+      if (catIndex >= 0 && catIndex < segments.length - 1) {
+        // Return the last segment after 'category' (could be parent/child structure)
+        return segments.last;
+      }
+      return '';
+    } catch (_) {
+      return '';
+    }
+  }
+
+  Future<bool> _openCategoryBySlug(String slug) async {
+    try {
+      final catResp = await http.get(
+        Uri.parse('https://darasahuru.ac.tz/wp-json/wp/v2/categories?slug=$slug'),
+      );
+      if (catResp.statusCode == 200) {
+        final List<dynamic> items = json.decode(catResp.body);
+        if (items.isNotEmpty) {
+          final item = items[0];
+          final rawName = item['name'] ?? 'Category';
+          final categoryName = HtmlUnescape().convert(rawName);
+          final categoryId = item['id'] as int;
+          
+          if (mounted) {
+            Navigator.push(
+              context,
+              MaterialPageRoute(
+                builder: (_) => NewsPostsListScreen(
+                  title: categoryName,
+                  categoryId: categoryId,
+                  slug: slug,
+                ),
+              ),
+            );
+          }
+          return true;
+        }
+      }
+      return false;
+    } catch (_) {
+      return false;
+    }
+  }
+
   void _handleLinkTap(String url) async {
     try {
       Uri uri = Uri.parse(url);
@@ -574,6 +750,16 @@ class _PostDetailScreenState extends State<PostDetailScreen> {
       }
 
       if (uri.host.contains('darasahuru.ac.tz')) {
+        // Check if it's a category link
+        if (_isCategoryLink(uri)) {
+          final categorySlug = _extractCategorySlugFromUri(uri);
+          if (categorySlug.isNotEmpty) {
+            final opened = await _openCategoryBySlug(categorySlug);
+            if (opened) return;
+          }
+        }
+        
+        // Check if it's a post with ID
         final p = uri.queryParameters['p'];
         if (p != null) {
           final id = int.tryParse(p);
@@ -582,11 +768,14 @@ class _PostDetailScreenState extends State<PostDetailScreen> {
             return;
           }
         }
+        
+        // Try to open as post by slug
         final slug = _extractSlugFromUri(uri);
         if (slug.isNotEmpty) {
           await _openInternalPostBySlug(slug);
           return;
         }
+        
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('Content not found for this link.')),
         );
@@ -671,26 +860,31 @@ class _PostDetailScreenState extends State<PostDetailScreen> {
   String _getPostTime(dynamic post) {
     try {
       final dateStr = post['date'];
-      if (dateStr is String && dateStr.isNotEmpty) {
-        final dt = DateTime.tryParse(dateStr);
-        if (dt != null) {
-          final now = DateTime.now();
-          final diff = now.difference(dt);
-          if (diff.inSeconds < 60) return '${diff.inSeconds} seconds ago';
-          if (diff.inMinutes < 60) return '${diff.inMinutes} minutes ago';
-          if (diff.inHours < 24) return '${diff.inHours} hours ago';
-          if (diff.inDays == 1) return 'Yesterday';
-          if (diff.inDays < 7) return '${diff.inDays} days ago';
-          final weeks = (diff.inDays / 7).floor();
-          if (weeks < 5) return '$weeks week${weeks > 1 ? 's' : ''} ago';
-          final months = (diff.inDays / 30).floor();
-          if (months < 12) return '$months month${months > 1 ? 's' : ''} ago';
-          final years = (diff.inDays / 365).floor();
-          return '$years year${years > 1 ? 's' : ''} ago';
-        }
+      final dateGmtStr = post['date_gmt'];
+
+      DateTime? dt;
+      if (dateGmtStr is String && dateGmtStr.isNotEmpty) {
+        dt = DateTime.tryParse(dateGmtStr)?.toLocal();
       }
-    } catch (_) {}
-    return '';
+      dt ??= (dateStr is String && dateStr.isNotEmpty) ? DateTime.tryParse(dateStr) : null;
+      if (dt == null) return '';
+
+      final now = DateTime.now();
+      final diff = now.difference(dt);
+      if (diff.inSeconds < 60) return '${diff.inSeconds} seconds ago';
+      if (diff.inMinutes < 60) return '${diff.inMinutes} minutes ago';
+      if (diff.inHours < 24) return '${diff.inHours} hours ago';
+      if (diff.inDays == 1) return 'Yesterday';
+      if (diff.inDays < 7) return '${diff.inDays} days ago';
+      final weeks = (diff.inDays / 7).floor();
+      if (weeks < 5) return '$weeks week${weeks > 1 ? 's' : ''} ago';
+      final months = (diff.inDays / 30).floor();
+      if (months < 12) return '$months month${months > 1 ? 's' : ''} ago';
+      final years = (diff.inDays / 365).floor();
+      return '$years year${years > 1 ? 's' : ''} ago';
+    } catch (_) {
+      return '';
+    }
   }
 
   String? _getFeaturedImage(dynamic post) {
@@ -856,30 +1050,9 @@ class _PostDetailScreenState extends State<PostDetailScreen> {
                 icon: const Icon(Icons.refresh),
                 onPressed: _reloadWebView,
               ),
-              IconButton(
-                tooltip: 'Open in browser',
-                icon: const Icon(Icons.open_in_browser),
-                onPressed: _openOriginalInBrowser,
-              ),
             ],
           ),
-          body: Container(
-            margin: const EdgeInsets.all(16.0),
-            padding: const EdgeInsets.all(16.0),
-            decoration: BoxDecoration(
-              color: Colors.white,
-              borderRadius: BorderRadius.circular(12.0),
-              boxShadow: [
-                BoxShadow(
-                  color: Colors.grey.withOpacity(0.1),
-                  spreadRadius: 2,
-                  blurRadius: 5,
-                  offset: const Offset(0, 3),
-                ),
-              ],
-            ),
-            child: _buildWebViewContent(),
-          ),
+          body: _wrapWithBackground(_buildWebViewContent()),
         );
       }
 
@@ -893,118 +1066,104 @@ class _PostDetailScreenState extends State<PostDetailScreen> {
           elevation: 0,
           actions: const [],
         ),
-        body: SingleChildScrollView(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              // Content section in a card (grows with content)
-              Container(
-                margin: const EdgeInsets.all(16.0),
-                padding: const EdgeInsets.all(16.0),
-                decoration: BoxDecoration(
-                  color: Colors.white,
-                  borderRadius: BorderRadius.circular(12.0),
-                  boxShadow: [
-                    BoxShadow(
-                      color: Colors.grey.withOpacity(0.1),
-                      spreadRadius: 2,
-                      blurRadius: 5,
-                      offset: const Offset(0, 3),
-                    ),
-                  ],
-                ),
-                child: _buildFlutterHtmlContent(),
-              ),
+        body: _wrapWithBackground(
+          SingleChildScrollView(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                // Full-width content without margins/decoration
+                _buildFlutterHtmlContent(),
 
-              // Recommended posts
-              if (_recommendedPosts.isNotEmpty) ...[
-                Container(
-                  margin: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 8.0),
-                  child: Text(
-                    'Recommended Posts',
-                    style: Theme.of(context).textTheme.headlineSmall?.copyWith(fontWeight: FontWeight.bold),
+                // Recommended posts
+                if (_recommendedPosts.isNotEmpty) ...[
+                  Container(
+                    margin: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 8.0),
+                    child: Text(
+                      'Recommended Posts',
+                      style: Theme.of(context).textTheme.headlineSmall?.copyWith(fontWeight: FontWeight.bold),
+                    ),
                   ),
-                ),
-                Container(
-                  margin: const EdgeInsets.symmetric(horizontal: 16.0),
-                  child: ListView.builder(
-                    shrinkWrap: true,
-                    physics: const NeverScrollableScrollPhysics(),
-                    itemCount: min(_recommendedPosts.length, 4),
-                    itemBuilder: (context, index) {
-                      final post = _recommendedPosts[index];
-                      final rawTitle = post['title']?['rendered'] ?? 'No Title';
-                      final title = HtmlUnescape().convert(rawTitle);
-                      final imgUrl = _getFeaturedImage(post);
-                      final time = _getPostTime(post);
-                      final catId = (post['categories'] is List && (post['categories'] as List).isNotEmpty)
-                          ? (post['categories'][0] as int)
-                          : null;
-                      return Card(
-                        margin: const EdgeInsets.symmetric(vertical: 8.0),
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(8.0),
-                        ),
-                        child: ListTile(
-                          leading: ClipRRect(
+                  Container(
+                    margin: const EdgeInsets.symmetric(horizontal: 16.0),
+                    child: ListView.builder(
+                      shrinkWrap: true,
+                      physics: const NeverScrollableScrollPhysics(),
+                      itemCount: min(_recommendedPosts.length, 4),
+                      itemBuilder: (context, index) {
+                        final post = _recommendedPosts[index];
+                        final rawTitle = post['title']?['rendered'] ?? 'No Title';
+                        final title = HtmlUnescape().convert(rawTitle);
+                        final imgUrl = _getFeaturedImage(post);
+                        final time = _getPostTime(post);
+                        final catId = (post['categories'] is List && (post['categories'] as List).isNotEmpty)
+                            ? (post['categories'][0] as int)
+                            : null;
+                        return Card(
+                          margin: const EdgeInsets.symmetric(vertical: 8.0),
+                          shape: RoundedRectangleBorder(
                             borderRadius: BorderRadius.circular(8.0),
-                            child: imgUrl != null
-                                ? Image.network(
-                                    imgUrl,
-                                    width: 60,
-                                    height: 60,
-                                    fit: BoxFit.cover,
-                                    errorBuilder: (_, __, ___) => Container(
+                          ),
+                          child: ListTile(
+                            leading: ClipRRect(
+                              borderRadius: BorderRadius.circular(8.0),
+                              child: imgUrl != null
+                                  ? Image.network(
+                                      imgUrl,
+                                      width: 60,
+                                      height: 60,
+                                      fit: BoxFit.cover,
+                                      errorBuilder: (_, __, ___) => Container(
+                                        width: 60,
+                                        height: 60,
+                                        color: Colors.grey.shade200,
+                                        child: const Icon(Icons.image, color: Colors.grey),
+                                      ),
+                                    )
+                                  : Container(
                                       width: 60,
                                       height: 60,
                                       color: Colors.grey.shade200,
                                       child: const Icon(Icons.image, color: Colors.grey),
                                     ),
+                            ),
+                            title: Text(
+                              title,
+                              maxLines: 2,
+                              overflow: TextOverflow.ellipsis,
+                              style: const TextStyle(fontWeight: FontWeight.bold),
+                            ),
+                            subtitle: time.isNotEmpty
+                                ? Text(
+                                    time,
+                                    style: const TextStyle(fontSize: 12, color: Colors.grey),
                                   )
-                                : Container(
-                                    width: 60,
-                                    height: 60,
-                                    color: Colors.grey.shade200,
-                                    child: const Icon(Icons.image, color: Colors.grey),
+                                : null,
+                            onTap: () {
+                              Navigator.push(
+                                context,
+                                MaterialPageRoute(
+                                  builder: (_) => PostDetailScreen(
+                                    title: title,
+                                    htmlContent: post['content']?['rendered'] ?? '',
+                                    categoryId: catId,
+                                    postUrl: (post['link'] is String) ? post['link'] as String : null,
                                   ),
-                          ),
-                          title: Text(
-                            title,
-                            maxLines: 2,
-                            overflow: TextOverflow.ellipsis,
-                            style: const TextStyle(fontWeight: FontWeight.bold),
-                          ),
-                          subtitle: time.isNotEmpty
-                              ? Text(
-                                  time,
-                                  style: const TextStyle(fontSize: 12, color: Colors.grey),
-                                )
-                              : null,
-                          onTap: () {
-                            Navigator.push(
-                              context,
-                              MaterialPageRoute(
-                                builder: (_) => PostDetailScreen(
-                                  title: title,
-                                  htmlContent: post['content']?['rendered'] ?? '',
-                                  categoryId: catId,
-                                  postUrl: (post['link'] is String) ? post['link'] as String : null,
                                 ),
-                              ),
-                            );
-                          },
-                        ),
-                      );
-                    },
+                              );
+                            },
+                          ),
+                        );
+                      },
+                    ),
                   ),
-                ),
-              ] else if (_isLoadingRecommendations) ...[
-                Container(
-                  margin: const EdgeInsets.all(16.0),
-                  child: const Center(child: CircularProgressIndicator()),
-                ),
+                ] else if (_isLoadingRecommendations) ...[
+                  Container(
+                    margin: const EdgeInsets.all(16.0),
+                    child: const Center(child: CircularProgressIndicator()),
+                  ),
+                ],
               ],
-            ],
+            ),
           ),
         ),
       );
